@@ -1,1 +1,2 @@
-# Dependencies will be added per implementation stage.
+# Runtime dependencies, added per implementation stage.
+pydantic>=2,<3

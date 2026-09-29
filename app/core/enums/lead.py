@@ -1,0 +1,52 @@
+from enum import StrEnum
+
+
+class LeadOrigin(StrEnum):
+    INBOUND = "INBOUND"
+    OUTBOUND = "OUTBOUND"
+
+
+class LeadStage(StrEnum):
+    """Pipeline position. Contactability (DNC) and outcomes are deliberately not stages."""
+
+    NEW = "NEW"
+    CONTACTED = "CONTACTED"
+    ENGAGED = "ENGAGED"
+    INTERESTED = "INTERESTED"
+    MEETING_REQUESTED = "MEETING_REQUESTED"
+    CLOSED = "CLOSED"
+
+
+class LeadStatus(StrEnum):
+    """Who drives the lead; orthogonal to stage."""
+
+    AUTOMATED = "AUTOMATED"
+    ON_HOLD = "ON_HOLD"
+    OPERATOR_OWNED = "OPERATOR_OWNED"
+
+
+class CloseReason(StrEnum):
+    NOT_INTERESTED = "NOT_INTERESTED"
+    NO_RESPONSE = "NO_RESPONSE"
+    UNSUBSCRIBED = "UNSUBSCRIBED"
+    INVALID_CONTACT = "INVALID_CONTACT"
+    DUPLICATE = "DUPLICATE"
+    WON = "WON"
+    LOST = "LOST"
+
+
+class LeadIntent(StrEnum):
+    INFO_REQUEST = "INFO_REQUEST"
+    PRICING_REQUEST = "PRICING_REQUEST"
+    MEETING_REQUEST = "MEETING_REQUEST"
+    POSITIVE_INTEREST = "POSITIVE_INTEREST"
+    OBJECTION = "OBJECTION"
+    NEGOTIATION = "NEGOTIATION"
+    NOT_INTERESTED = "NOT_INTERESTED"
+    UNSUBSCRIBE = "UNSUBSCRIBE"
+    REFERRAL = "REFERRAL"
+    OUT_OF_OFFICE = "OUT_OF_OFFICE"
+    LEGAL_OR_COMPLAINT = "LEGAL_OR_COMPLAINT"
+    NON_SALES = "NON_SALES"
+    SPAM_OR_IRRELEVANT = "SPAM_OR_IRRELEVANT"
+    UNCLEAR = "UNCLEAR"

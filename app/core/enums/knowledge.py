@@ -1,0 +1,46 @@
+from enum import StrEnum
+
+
+class KnowledgeDomain(StrEnum):
+    """The 15 approved knowledge domains. Knowledge content only, never operational state."""
+
+    COMPANY = "COMPANY"
+    PRODUCTS_SERVICES = "PRODUCTS_SERVICES"
+    PRICING_COMMERCIAL = "PRICING_COMMERCIAL"
+    ICP = "ICP"
+    SALES_PLAYBOOKS = "SALES_PLAYBOOKS"
+    FAQ = "FAQ"
+    OBJECTIONS = "OBJECTIONS"
+    CASE_STUDIES = "CASE_STUDIES"
+    OUTBOUND_MESSAGING = "OUTBOUND_MESSAGING"
+    INDUSTRY = "INDUSTRY"
+    COMPETITORS = "COMPETITORS"
+    LEGAL_COMPLIANCE = "LEGAL_COMPLIANCE"
+    CONTACTS_ROUTING = "CONTACTS_ROUTING"
+    MEETING_GUIDANCE = "MEETING_GUIDANCE"
+    MARKETING_MATERIALS = "MARKETING_MATERIALS"
+
+
+class KnowledgeApprovalStatus(StrEnum):
+    DRAFT = "DRAFT"
+    APPROVED = "APPROVED"
+    RETIRED = "RETIRED"
+
+
+class KnowledgeExternalUse(StrEnum):
+    EXTERNAL_OK = "EXTERNAL_OK"
+    INTERNAL_ONLY = "INTERNAL_ONLY"
+
+
+class KnowledgeDecision(StrEnum):
+    SUFFICIENT = "SUFFICIENT"
+    PARTIAL = "PARTIAL"
+    INSUFFICIENT = "INSUFFICIENT"
+    CONFLICTING = "CONFLICTING"
+    STALE = "STALE"
+    NOT_APPROVED = "NOT_APPROVED"
+
+
+class KnowledgePurpose(StrEnum):
+    INBOUND_REPLY = "INBOUND_REPLY"
+    OUTBOUND_COMPOSE = "OUTBOUND_COMPOSE"
