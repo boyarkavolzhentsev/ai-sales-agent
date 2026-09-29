@@ -77,6 +77,14 @@ class CommandKind(StrEnum):
     CANCEL_FOLLOW_UP = "CANCEL_FOLLOW_UP"
     CLOSE_CONVERSATION = "CLOSE_CONVERSATION"
     MARK_DO_NOT_CONTACT = "MARK_DO_NOT_CONTACT"
+    # Campaign execution control (Stage 10).
+    ACTIVATE_CAMPAIGN = "ACTIVATE_CAMPAIGN"
+    PAUSE_CAMPAIGN = "PAUSE_CAMPAIGN"
+    RESUME_CAMPAIGN = "RESUME_CAMPAIGN"
+    CANCEL_CAMPAIGN = "CANCEL_CAMPAIGN"
+    COMPLETE_CAMPAIGN = "COMPLETE_CAMPAIGN"
+    CANCEL_CAMPAIGN_MEMBER = "CANCEL_CAMPAIGN_MEMBER"
+    SUPPRESS_CAMPAIGN_MEMBER = "SUPPRESS_CAMPAIGN_MEMBER"
 
 
 class RejectReason(StrEnum):
@@ -118,6 +126,16 @@ class BlockCode(StrEnum):
     CONVERSATION_NOT_RESUMABLE = "CONVERSATION_NOT_RESUMABLE"
     ESCALATION_OPEN = "ESCALATION_OPEN"
     NO_FOLLOW_UP_TO_CANCEL = "NO_FOLLOW_UP_TO_CANCEL"
+    # Campaign execution (Stage 10).
+    CAMPAIGN_MEMBER_NOT_READY = "CAMPAIGN_MEMBER_NOT_READY"
+    CONVERSATION_ACTIVE = "CONVERSATION_ACTIVE"
+    OTHER_OUTBOUND_OUTSTANDING = "OTHER_OUTBOUND_OUTSTANDING"
+    CONTACT_ADDRESS_INVALID = "CONTACT_ADDRESS_INVALID"
+    CAMPAIGN_VERSION_CHANGED = "CAMPAIGN_VERSION_CHANGED"
+    CAMPAIGN_STATE_INVALID = "CAMPAIGN_STATE_INVALID"
+    CAMPAIGN_HAS_ACTIVE_MEMBERS = "CAMPAIGN_HAS_ACTIVE_MEMBERS"
+    MEMBER_VERSION_CHANGED = "MEMBER_VERSION_CHANGED"
+    MEMBER_ENDED = "MEMBER_ENDED"
 
 
 class _Command(CoreModel):
@@ -197,7 +215,55 @@ class MarkDoNotContact(_ConversationCommand):
 
 
 ConversationCommand = PauseConversation | ResumeConversation | CancelFollowUp | CloseConversation | MarkDoNotContact
-OperatorCommand = ApproveDraft | RejectDraft | TakeOwnership | ResolveEscalation | ConversationCommand
+
+
+class _CampaignCommand(_Command):
+    """Applies to one campaign as the operator saw it (``expected_campaign_version``)."""
+
+    campaign_id: EntityId
+    expected_campaign_version: Version
+
+
+class ActivateCampaign(_CampaignCommand):
+    kind: Literal[CommandKind.ACTIVATE_CAMPAIGN] = CommandKind.ACTIVATE_CAMPAIGN
+
+
+class PauseCampaign(_CampaignCommand):
+    kind: Literal[CommandKind.PAUSE_CAMPAIGN] = CommandKind.PAUSE_CAMPAIGN
+
+
+class ResumeCampaign(_CampaignCommand):
+    kind: Literal[CommandKind.RESUME_CAMPAIGN] = CommandKind.RESUME_CAMPAIGN
+
+
+class CancelCampaign(_CampaignCommand):
+    kind: Literal[CommandKind.CANCEL_CAMPAIGN] = CommandKind.CANCEL_CAMPAIGN
+    note: OperatorNote | None = None
+
+
+class CompleteCampaign(_CampaignCommand):
+    kind: Literal[CommandKind.COMPLETE_CAMPAIGN] = CommandKind.COMPLETE_CAMPAIGN
+
+
+class _MemberCommand(_Command):
+    member_id: EntityId
+    expected_member_version: Version
+    note: OperatorNote | None = None
+
+
+class CancelCampaignMember(_MemberCommand):
+    kind: Literal[CommandKind.CANCEL_CAMPAIGN_MEMBER] = CommandKind.CANCEL_CAMPAIGN_MEMBER
+
+
+class SuppressCampaignMember(_MemberCommand):
+    kind: Literal[CommandKind.SUPPRESS_CAMPAIGN_MEMBER] = CommandKind.SUPPRESS_CAMPAIGN_MEMBER
+
+
+CampaignCommand = ActivateCampaign | PauseCampaign | ResumeCampaign | CancelCampaign | CompleteCampaign
+MemberCommand = CancelCampaignMember | SuppressCampaignMember
+OperatorCommand = (
+    ApproveDraft | RejectDraft | TakeOwnership | ResolveEscalation | ConversationCommand | CampaignCommand | MemberCommand
+)
 
 
 class VersionChange(CoreModel):

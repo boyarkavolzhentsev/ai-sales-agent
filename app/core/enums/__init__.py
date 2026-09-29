@@ -7,6 +7,7 @@ from app.core.enums.campaign import (
     CampaignStatus,
     is_review_mode_supported_v1,
 )
+from app.core.enums.campaign_member import CampaignJobStatus, CampaignMemberStatus
 from app.core.enums.conversation import ConversationStatus, FollowUpJobStatus
 from app.core.enums.dnc import DNCReason, DNCScope
 from app.core.enums.email import EmailDirection
@@ -51,6 +52,8 @@ from app.core.enums.reply import (
 __all__ = [
     "SUPPORTED_REVIEW_MODES_V1",
     "ActorType",
+    "CampaignJobStatus",
+    "CampaignMemberStatus",
     "CampaignReviewMode",
     "CampaignStatus",
     "ClaimCheckStatus",

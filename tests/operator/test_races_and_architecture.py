@@ -89,7 +89,7 @@ def test_concurrent_approve_and_unsubscribe_always_end_suppressed_and_cancelled(
 OPERATOR_DIR = Path(__file__).resolve().parents[2] / "app" / "operator"
 ALLOWED_APP_MODULES = (
     "app.core", "app.persistence", "app.knowledge.retrieval", "app.llm", "app.inbound", "app.operator",
-    "app.policy.suppression", "app.conversation",
+    "app.policy.suppression", "app.conversation", "app.campaign",
 )
 FORBIDDEN_MODULES = (
     "smtplib", "imaplib", "poplib", "http", "socket", "ssl", "urllib.request", "requests", "httpx", "aiohttp",

@@ -46,9 +46,12 @@ from datetime import datetime
 
 from pydantic import JsonValue
 
-from app.core.enums import ActorType, EmailDirection, OutboundDecision, OutboundKind, OutboundStatus, RefKind
+from app.core.enums import ActorType, CampaignMemberStatus, EmailDirection, OutboundDecision, OutboundKind, OutboundStatus, RefKind
 from app.core.models import Actor, AuditEvent, EmailMessage, EmailThread, EntityRef, OutboundMessage, SendPermit
 from app.core.models.types import JsonObject
+from app.campaign import state as campaign_state
+from app.campaign.guards import campaign_blockers_for
+from app.campaign.state import is_campaign_message
 from app.conversation import state as conversation_state
 from app.conversation.guards import follow_up_dispatch_blockers
 from app.dispatch.errors import DispatchNotFoundError, DispatchStateError
@@ -72,7 +75,7 @@ from app.dispatch.transport import (
 )
 from app.inbound import stable_id
 from app.inbound.records import ref
-from app.operator.review import load_draft_context, reply_gate_blockers
+from app.operator.review import REVIEWABLE_KINDS, load_draft_context, reply_gate_blockers
 from app.persistence import (
     UNRESOLVED_ATTEMPT_STATES,
     Clock,
@@ -231,8 +234,10 @@ class DispatchService:
         binding, binding_codes = bind(uow, outbound, self._config)
         codes += binding_codes
         codes += [code.value for code in reply_gate_blockers(uow, outbound, self._config.sender, now)]
-        # A follow-up draft also needs its conversation to still allow follow-ups (Stage 9).
+        # A follow-up draft also needs its conversation to still allow follow-ups (Stage 9),
+        # and a campaign touch its campaign and membership to still allow sending (Stage 10).
         codes += follow_up_dispatch_blockers(uow, outbound, now)
+        codes += campaign_blockers_for(uow, outbound, now, expected=CampaignMemberStatus.APPROVED)
         if binding is not None:
             policy = evaluate_policy(uow, outbound, binding, self._config, now)
             if policy.decision is not OutboundDecision.SEND:
@@ -281,14 +286,24 @@ class DispatchService:
             "outbound_versions": {"expected": outbound.version, "resulting": sending.version},
             "previous_status": outbound.status.value,
         })
-        trigger = binding.trigger
+        campaign_state.record_dispatch_claimed(uow, sending, correlation_id=correlation_id, now=now)
+        references = self._thread_refs(uow, sending, binding)
         request = TransportRequest(
             request_id=attempt.attempt_id, rfc_message_id=attempt.rfc_message_id, sender_mailbox=attempt.sender_mailbox,
             sender_name=self._config.sender.sender_name, recipient=attempt.recipient, subject=sending.subject,
-            body=sending.body_final, in_reply_to=trigger.rfc_message_id,
-            references=tuple(dict.fromkeys((*trigger.references, trigger.rfc_message_id))),
+            body=sending.body_final, in_reply_to=references[-1] if references else None, references=references,
         )
         return _Claim(attempt=attempt, request=request)
+
+    @staticmethod
+    def _thread_refs(uow: UnitOfWork, outbound: OutboundMessage, binding: Binding) -> tuple[str, ...]:
+        """A reply answers its trigger; a campaign touch continues its own thread (a first
+        touch has no references, a follow-up replies to the previous touches)."""
+        if binding.trigger is not None:
+            return tuple(dict.fromkeys((*binding.trigger.references, binding.trigger.rfc_message_id)))
+        return tuple(
+            m.rfc_message_id for m in (uow.messages.get(i) for i in binding.thread.message_ids) if m is not None
+        )
 
     def _account(self, uow: UnitOfWork, approved: OutboundMessage, attempt_id: str, now: datetime) -> QuotaReservation:
         """First attempt: reserve (Stage 3) and consume in this transaction. Retry: the
@@ -374,6 +389,10 @@ class DispatchService:
                 )
                 uow.outbound.update(failed, outbound.version)
                 outbound = failed
+                campaign_state.record_dispatch_not_accepted(
+                    uow, failed, retry_possible=result.retryable and updated.attempt_no < self._config.max_attempts,
+                    reason=result.reason_code, correlation_id=correlation_id, now=now,
+                )
             self._audit(uow, f"DISPATCH_{state.value}", updated, correlation_id, now, {
                 "reason_code": result.reason_code,
                 "retryable": result.retryable,
@@ -415,6 +434,9 @@ class DispatchService:
                        "version": attempt.version + 1}
                 )
                 uow.dispatch_attempts.update(recorded, attempt.version)
+            # The message was accepted even though its message-level history stands: a campaign
+            # records the accepted touch (idempotently) so its state follows provider truth.
+            campaign_state.record_touch_accepted(uow, outbound, correlation_id=correlation_id, now=now)
             return self._result(outbound, recorded, correlation_id, now, codes=(DispatchCode.LATE_RESULT_CONFLICT,),
                                 reconciled=reconciled, transport_called=transport_called)
         corrected = DispatchAttempt.model_validate(
@@ -434,7 +456,12 @@ class DispatchService:
                "rfc_message_id": attempt.rfc_message_id, "failure_reason": None, "version": outbound.version + 1}
         )
         uow.outbound.update(sent, outbound.version)
-        conversation_state.record_outbound_accepted(uow, sent, correlation_id=attempt.correlation_id, now=now)
+        if is_campaign_message(sent):
+            # A campaign touch stays in the campaign sequence; a conversation only begins when
+            # the contact replies (Stage 6/9), so the two workflows never overlap.
+            campaign_state.record_touch_accepted(uow, sent, correlation_id=attempt.correlation_id, now=now)
+        else:
+            conversation_state.record_outbound_accepted(uow, sent, correlation_id=attempt.correlation_id, now=now)
         # Record our message in its thread so the customer's reply to it threads normally.
         thread = uow.threads.get(outbound.thread_id or "")
         if thread is not None:
@@ -459,9 +486,10 @@ class DispatchService:
     @staticmethod
     def _trigger_refs(uow: UnitOfWork, outbound: OutboundMessage) -> tuple[str, ...]:
         context = load_draft_context(uow, outbound)
-        trigger = uow.messages.get(context.message_id) if context else None
-        if trigger is None:
-            return ()
+        trigger = uow.messages.get(context.message_id) if context is not None and context.message_id else None
+        if trigger is None:  # a campaign touch: the thread's earlier messages
+            thread = uow.threads.get(outbound.thread_id or "")
+            return tuple(m.rfc_message_id for m in (uow.messages.get(i) for i in (thread.message_ids if thread else ())) if m)
         return tuple(dict.fromkeys((*trigger.references, trigger.rfc_message_id)))
 
     # ---- Helpers ----------------------------------------------------------------------------
@@ -469,7 +497,7 @@ class DispatchService:
     @staticmethod
     def _reply(uow: UnitOfWork, outbound_id: str) -> OutboundMessage:
         outbound = uow.outbound.get(outbound_id)
-        if outbound is None or outbound.kind is not OutboundKind.REPLY:
+        if outbound is None or outbound.kind not in REVIEWABLE_KINDS:
             raise DispatchNotFoundError(f"reply {outbound_id} not found")
         return outbound
 

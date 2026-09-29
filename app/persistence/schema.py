@@ -371,3 +371,43 @@ V6_CONVERSATIONS_SCHEMA: tuple[str, ...] = (
     "CREATE INDEX follow_up_jobs_due_idx ON follow_up_jobs (status, due_at)",
     "CREATE INDEX follow_up_jobs_lease_idx ON follow_up_jobs (status, lease_expires_at)",
 )
+
+# v7: campaign execution. One membership per (campaign, contact); one job per logical touch
+# of a membership; at most one open (SCHEDULED or CLAIMED) job per membership; at most one
+# job per produced draft.
+V7_CAMPAIGN_EXECUTION_SCHEMA: tuple[str, ...] = (
+    f"""CREATE TABLE campaign_members (
+        member_id TEXT PRIMARY KEY,
+        campaign_id TEXT NOT NULL REFERENCES campaigns (campaign_id),
+        contact_id TEXT NOT NULL REFERENCES contacts (contact_id),
+        lead_id TEXT REFERENCES leads (lead_id),
+        status TEXT NOT NULL CHECK (status IN ('ENROLLED', 'DRAFTED', 'APPROVED', 'DISPATCHING', 'WAITING',
+            'REPLIED', 'CONVERTED', 'COMPLETED', 'SKIPPED', 'SUPPRESSED', 'FAILED', 'CANCELLED')),
+        next_action_at TEXT,
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA},
+        UNIQUE (campaign_id, contact_id)
+    ) STRICT""",
+    "CREATE INDEX campaign_members_status_idx ON campaign_members (campaign_id, status)",
+    "CREATE INDEX campaign_members_contact_idx ON campaign_members (contact_id)",
+    "CREATE INDEX campaign_members_lead_idx ON campaign_members (lead_id)",
+    f"""CREATE TABLE campaign_jobs (
+        job_id TEXT PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES campaign_members (member_id),
+        campaign_id TEXT NOT NULL REFERENCES campaigns (campaign_id),
+        touch_no INTEGER NOT NULL CHECK (touch_no >= 1),
+        status TEXT NOT NULL CHECK (status IN ('SCHEDULED', 'CLAIMED', 'COMPLETED', 'CANCELLED', 'BLOCKED',
+            'SUPERSEDED')),
+        due_at TEXT NOT NULL,
+        lease_expires_at TEXT,
+        outbound_id TEXT UNIQUE REFERENCES outbound_messages (outbound_id),
+        created_at TEXT NOT NULL,
+        {_VERSIONED_DATA},
+        UNIQUE (member_id, touch_no)
+    ) STRICT""",
+    """CREATE UNIQUE INDEX campaign_jobs_one_open_per_member
+        ON campaign_jobs (member_id) WHERE status IN ('SCHEDULED', 'CLAIMED')""",
+    "CREATE INDEX campaign_jobs_due_idx ON campaign_jobs (status, due_at)",
+    "CREATE INDEX campaign_jobs_lease_idx ON campaign_jobs (status, lease_expires_at)",
+    "CREATE INDEX campaign_jobs_campaign_idx ON campaign_jobs (campaign_id, status)",
+)

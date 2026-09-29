@@ -1,6 +1,10 @@
 """SQLite implementations of the repository protocols. Parameterized SQL only."""
 
 from app.persistence.repositories.sqlite.audit import SqliteAuditRepository
+from app.persistence.repositories.sqlite.campaign_members import (
+    SqliteCampaignJobRepository,
+    SqliteCampaignMemberRepository,
+)
 from app.persistence.repositories.sqlite.campaigns import SqliteCampaignRepository
 from app.persistence.repositories.sqlite.companies import SqliteProspectCompanyRepository
 from app.persistence.repositories.sqlite.contacts import SqliteProspectContactRepository
@@ -30,6 +34,8 @@ from app.persistence.repositories.sqlite.threads import SqliteEmailThreadReposit
 
 __all__ = [
     "SqliteAuditRepository",
+    "SqliteCampaignJobRepository",
+    "SqliteCampaignMemberRepository",
     "SqliteCampaignRepository",
     "SqliteConversationRepository",
     "SqliteDispatchAttemptRepository",

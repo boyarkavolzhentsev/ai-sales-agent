@@ -95,6 +95,7 @@ from app.llm import (
 )
 from app.llm.inputs import MAX_EMAIL_BODY_CHARS
 from app.persistence import Clock, Database, DuplicateIdempotencyKeyError, UnitOfWork
+from app.campaign import state as campaign_state
 from app.conversation import state as conversation_state
 from app.conversation.cancellation import cancel_undispatched
 from app.policy.suppression import evaluate_suppression
@@ -298,6 +299,10 @@ class InboundService:
                 is_auto_generated=outcome in (PrefilterOutcome.BOUNCE, PrefilterOutcome.AUTO_SUBMITTED),
             )
         )
+        if outcome is PrefilterOutcome.NONE and contact_id is not None:
+            # The contact wrote: campaign automation for them stops here, atomically with the
+            # observation; the conversation workflow owns the contact from now on.
+            campaign_state.record_contact_reply(uow, contact_id, correlation_id=correlation_id, now=now)
         if outcome is PrefilterOutcome.NONE and contact_id is not None and lead_id is not None:
             # Supersedes pending follow-ups before any analysis starts, so a follow-up that is
             # due right now cannot be executed or dispatched against this newer message.
@@ -680,11 +685,14 @@ class InboundService:
                     "created_at": now.isoformat(),
                 })
 
+            final_lead = uow.leads.get(observation.lead_id) if observation.lead_id else None
             conversation_state.record_inbound_outcome(
                 uow, thread_id=observation.thread_id, contact_id=observation.contact_id,
-                lead=uow.leads.get(observation.lead_id) if observation.lead_id else None, dnc_added=analysis.add_dnc,
+                lead=final_lead, dnc_added=analysis.add_dnc,
                 escalated=analysis.decision is ReplyDecision.ESCALATE, correlation_id=correlation_id, now=now,
             )
+            campaign_state.record_inbound_outcome(uow, contact_id=observation.contact_id, lead=final_lead,
+                                                  dnc_added=analysis.add_dnc, correlation_id=correlation_id, now=now)
             result = InboundResult(
                 correlation_id=correlation_id,
                 message_id=message_id,

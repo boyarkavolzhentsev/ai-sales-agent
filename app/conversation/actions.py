@@ -60,10 +60,18 @@ def close(uow: UnitOfWork, conversation: Conversation, *, correlation_id: str, n
 def mark_do_not_contact(
     uow: UnitOfWork, conversation: Conversation, *, operator_id: str, command_id: str, correlation_id: str, now: datetime
 ) -> tuple[str | None, list[str]]:
+    """Suppress the contact of this conversation (see ``suppress_contact``)."""
+    return suppress_contact(uow, conversation.contact_id, operator_id=operator_id, command_id=command_id,
+                            correlation_id=correlation_id, now=now)
+
+
+def suppress_contact(
+    uow: UnitOfWork, contact_id: str, *, operator_id: str, command_id: str, correlation_id: str, now: datetime
+) -> tuple[str | None, list[str]]:
     """Suppress the contact (never reversed here), end every conversation of the contact,
     and cancel every undispatched message of the contact's leads (releasing quota).
     Returns (new DNC entry id or None if one was already active, cancelled outbound ids)."""
-    contact = uow.contacts.get(conversation.contact_id)
+    contact = uow.contacts.get(contact_id)
     entry_id: str | None = None
     if contact is not None and not uow.dnc.list_active(DNCScope.EMAIL, contact.email, now):
         entry = DoNotContactEntry(
@@ -74,12 +82,12 @@ def mark_do_not_contact(
         uow.dnc.add(entry)
         entry_id = entry.entry_id
     cancelled_ids: list[str] = []
-    for other in uow.conversations.list_by_contact(conversation.contact_id):
+    for other in uow.conversations.list_by_contact(contact_id):
         stop_follow_ups(uow, other, FollowUpJobStatus.CANCELLED, "DO_NOT_CONTACT", correlation_id=correlation_id, now=now)
         current = _fresh(uow, other)
         if current.status is not S.DO_NOT_CONTACT:
             save(uow, current, status=S.DO_NOT_CONTACT, correlation_id=correlation_id, now=now)
-    for lead in uow.leads.list_by_contact(conversation.contact_id):
+    for lead in uow.leads.list_by_contact(contact_id):
         cancelled, _ = cancel_undispatched(uow, uow.outbound.list_by_lead(lead.lead_id), now)
         cancelled_ids += [m.outbound_id for m in cancelled]
     return entry_id, cancelled_ids

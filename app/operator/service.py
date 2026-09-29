@@ -30,7 +30,10 @@ from pydantic import JsonValue
 
 from app.core.enums import (
     ActorType,
+    CampaignMemberStatus,
+    CampaignStatus,
     ConversationStatus,
+    is_review_mode_supported_v1,
     EscalationResolution,
     EscalationStatus,
     FollowUpCancelReason,
@@ -44,7 +47,10 @@ from app.core.enums import (
 )
 from app.core.models import (
     TERMINAL_CONVERSATION_STATUSES,
+    TERMINAL_MEMBER_STATUSES,
     Actor,
+    Campaign,
+    CampaignMember,
     Conversation,
     AuditEvent,
     EmailMessage,
@@ -57,6 +63,10 @@ from app.core.models import (
     OutboundMessage,
 )
 from app.core.models.types import JsonObject
+from app.campaign import actions as campaign_actions
+from app.campaign import state as campaign_state
+from app.campaign.models import CampaignStats, MemberView
+from app.campaign.queries import campaign_stats, member_view
 from app.conversation import FOLLOW_UP_KEY_PREFIX
 from app.conversation import actions as conversation_actions
 from app.conversation.models import ConversationView
@@ -72,7 +82,16 @@ from app.operator.errors import (
     StaleCommandError,
 )
 from app.operator.models import (
+    ActivateCampaign,
     ApproveDraft,
+    CampaignCommand,
+    CancelCampaign,
+    CancelCampaignMember,
+    CompleteCampaign,
+    MemberCommand,
+    PauseCampaign,
+    ResumeCampaign,
+    SuppressCampaignMember,
     CancelFollowUp,
     CloseConversation,
     ConversationCommand,
@@ -99,6 +118,7 @@ from app.operator.models import (
     VersionChange,
 )
 from app.operator.review import (
+    REVIEWABLE_KINDS,
     REVIEWABLE_STATUSES,
     approval_blockers,
     evidence_views,
@@ -153,7 +173,7 @@ class OperatorService:
         authorize(self._authenticator, self._config, credential)
         with self._db.transaction() as uow:
             messages = [m for status in sorted(REVIEWABLE_STATUSES) for m in uow.outbound.list_by_status(status)]
-        pending = sorted((m for m in messages if m.kind is OutboundKind.REPLY), key=lambda m: (m.created_at, m.outbound_id))
+        pending = sorted((m for m in messages if m.kind in REVIEWABLE_KINDS), key=lambda m: (m.created_at, m.outbound_id))
         return tuple(_draft_summary(m) for m in pending[: self._config.max_list_items])
 
     def get_draft(self, credential: object, outbound_id: str) -> DraftDetail:
@@ -161,7 +181,7 @@ class OperatorService:
         now = self._clock.now()
         with self._db.transaction() as uow:
             outbound = uow.outbound.get(outbound_id)
-            if outbound is None or outbound.kind is not OutboundKind.REPLY:
+            if outbound is None or outbound.kind not in REVIEWABLE_KINDS:
                 raise OperatorNotFoundError(f"draft {outbound_id} not found")
             context = load_draft_context(uow, outbound)
             trigger = uow.messages.get(context.message_id) if context else None
@@ -298,6 +318,50 @@ class OperatorService:
     def mark_do_not_contact(self, credential: object, command: MarkDoNotContact) -> CommandResult:
         return self._execute(credential, command, self._mark_do_not_contact)
 
+    def activate_campaign(self, credential: object, command: ActivateCampaign) -> CommandResult:
+        return self._execute(credential, command, self._activate_campaign)
+
+    def pause_campaign(self, credential: object, command: PauseCampaign) -> CommandResult:
+        return self._execute(credential, command, self._pause_campaign)
+
+    def resume_campaign(self, credential: object, command: ResumeCampaign) -> CommandResult:
+        return self._execute(credential, command, self._resume_campaign)
+
+    def cancel_campaign(self, credential: object, command: CancelCampaign) -> CommandResult:
+        return self._execute(credential, command, self._cancel_campaign)
+
+    def complete_campaign(self, credential: object, command: CompleteCampaign) -> CommandResult:
+        return self._execute(credential, command, self._complete_campaign)
+
+    def cancel_campaign_member(self, credential: object, command: CancelCampaignMember) -> CommandResult:
+        return self._execute(credential, command, self._cancel_campaign_member)
+
+    def suppress_campaign_member(self, credential: object, command: SuppressCampaignMember) -> CommandResult:
+        return self._execute(credential, command, self._suppress_campaign_member)
+
+    # ---- Campaign reads (Stage 10) -----------------------------------------------------------
+
+    def get_campaign_stats(self, credential: object, campaign_id: str) -> CampaignStats:
+        authorize(self._authenticator, self._config, credential)
+        with self._db.transaction() as uow:
+            stats = campaign_stats(uow, campaign_id)
+        if stats is None:
+            raise OperatorNotFoundError(f"campaign {campaign_id} not found")
+        return stats
+
+    def list_campaign_members(self, credential: object, campaign_id: str) -> tuple[MemberView, ...]:
+        authorize(self._authenticator, self._config, credential)
+        with self._db.transaction() as uow:
+            return tuple(member_view(uow, m) for m in uow.campaign_members.list_by_campaign(campaign_id)[: self._config.max_list_items])
+
+    def get_campaign_member(self, credential: object, member_id: str) -> MemberView:
+        authorize(self._authenticator, self._config, credential)
+        with self._db.transaction() as uow:
+            member = uow.campaign_members.get(member_id)
+            if member is None:
+                raise OperatorNotFoundError(f"campaign member {member_id} not found")
+            return member_view(uow, member)
+
     def _execute[C: OperatorCommand](
         self,
         credential: object,
@@ -365,6 +429,7 @@ class OperatorService:
             }
         )
         uow.outbound.update(approved, outbound.version)
+        campaign_state.record_draft_approved(uow, approved, correlation_id=command.correlation_id, now=now)
         applied = _Applied(disposition=OutboundStatus.OPERATOR_APPROVED.value, reason_codes=("OPERATOR_APPROVED",))
         applied.changed(ref(RefKind.OUTBOUND_MESSAGE, outbound.outbound_id), outbound.version, "outbound", _outbound_state(outbound))
         applied.subjects += [ref(RefKind.MESSAGE_DRAFT, outbound.draft_id), ref(RefKind.LEAD, outbound.lead_id)]
@@ -394,6 +459,7 @@ class OperatorService:
             }
         )
         uow.outbound.update(rejected, outbound.version)
+        campaign_state.record_draft_rejected(uow, outbound, correlation_id=command.correlation_id, now=now)
         if outbound.idempotency_key.startswith(FOLLOW_UP_KEY_PREFIX) and outbound.thread_id is not None:
             conversation_actions.follow_up_draft_rejected(uow, outbound.thread_id, correlation_id=command.correlation_id, now=now)
         applied = _Applied(disposition="REJECTED", reason_codes=(command.reason.value,), note=command.note)
@@ -416,6 +482,7 @@ class OperatorService:
             lead.model_dump() | {"status": LeadStatus.OPERATOR_OWNED, "updated_at": max(now, lead.updated_at), "version": lead.version + 1}
         )
         uow.leads.update(owned, lead.version)
+        campaign_state.record_lead_owned(uow, lead.lead_id, correlation_id=command.correlation_id, now=now)
         applied = _Applied(disposition=LeadStatus.OPERATOR_OWNED.value)
         applied.changed(ref(RefKind.LEAD, lead.lead_id), lead.version, "lead", {"stage": lead.stage.value, "status": lead.status.value})
 
@@ -530,6 +597,7 @@ class OperatorService:
             uow, conversation, operator_id=operator_id, command_id=command.command_id,
             correlation_id=command.correlation_id, now=now,
         )
+        campaign_state.record_suppressed(uow, conversation.contact_id, correlation_id=command.correlation_id, now=now)
         after = uow.conversations.get(conversation.conversation_id) or conversation
         applied = self._conversation_applied(conversation, after, ConversationStatus.DO_NOT_CONTACT.value, command.note)
         if entry_id is not None:
@@ -538,12 +606,100 @@ class OperatorService:
         applied.reason_codes = tuple(f"CANCELLED:{outbound_id}" for outbound_id in cancelled)
         return applied
 
+    # ---- Campaign commands (Stage 10) ------------------------------------------------------
+
+    @staticmethod
+    def _campaign_for(uow: UnitOfWork, command: CampaignCommand) -> Campaign:
+        campaign = uow.campaigns.get(command.campaign_id)
+        if campaign is None:
+            raise OperatorNotFoundError(f"campaign {command.campaign_id} not found")
+        if campaign.version != command.expected_campaign_version:
+            raise StaleCommandError((BlockCode.CAMPAIGN_VERSION_CHANGED,))
+        return campaign
+
+    @staticmethod
+    def _campaign_applied(before: Campaign, after: Campaign, disposition: str, note: str | None = None) -> _Applied:
+        applied = _Applied(disposition=disposition, note=note)
+        applied.changed(ref(RefKind.CAMPAIGN, before.campaign_id), before.version, "campaign", {"status": before.status.value},
+                        resulting=after.version)
+        return applied
+
+    def _activate_campaign(self, uow: UnitOfWork, command: ActivateCampaign, now: datetime, operator_id: str) -> _Applied:
+        campaign = self._campaign_for(uow, command)
+        if campaign.status is not CampaignStatus.DRAFT or not is_review_mode_supported_v1(campaign.review_mode):
+            raise CommandRejectedError((BlockCode.CAMPAIGN_STATE_INVALID,))
+        return self._campaign_applied(campaign, campaign_actions.activate(uow, campaign, operator_id=operator_id, now=now), "ACTIVATED")
+
+    def _pause_campaign(self, uow: UnitOfWork, command: PauseCampaign, now: datetime, operator_id: str) -> _Applied:
+        campaign = self._campaign_for(uow, command)
+        if campaign.status is not CampaignStatus.ACTIVE:
+            raise CommandRejectedError((BlockCode.CAMPAIGN_STATE_INVALID,))
+        paused = campaign_actions.pause(uow, campaign, correlation_id=command.correlation_id, now=now)
+        return self._campaign_applied(campaign, paused, "PAUSED")
+
+    def _resume_campaign(self, uow: UnitOfWork, command: ResumeCampaign, now: datetime, operator_id: str) -> _Applied:
+        campaign = self._campaign_for(uow, command)
+        if campaign.status is not CampaignStatus.PAUSED:
+            raise CommandRejectedError((BlockCode.CAMPAIGN_STATE_INVALID,))
+        return self._campaign_applied(campaign, campaign_actions.resume(uow, campaign, now=now), "RESUMED")
+
+    def _cancel_campaign(self, uow: UnitOfWork, command: CancelCampaign, now: datetime, operator_id: str) -> _Applied:
+        campaign = self._campaign_for(uow, command)
+        if campaign.status is CampaignStatus.ENDED:
+            raise CommandRejectedError((BlockCode.CAMPAIGN_STATE_INVALID,))
+        ended, stopped = campaign_actions.cancel(uow, campaign, correlation_id=command.correlation_id, now=now)
+        applied = self._campaign_applied(campaign, ended, "CANCELLED", command.note)
+        applied.subjects += [ref(RefKind.CAMPAIGN_MEMBER, member_id) for member_id in stopped]
+        return applied
+
+    def _complete_campaign(self, uow: UnitOfWork, command: CompleteCampaign, now: datetime, operator_id: str) -> _Applied:
+        campaign = self._campaign_for(uow, command)
+        if campaign.status is CampaignStatus.ENDED:
+            raise CommandRejectedError((BlockCode.CAMPAIGN_STATE_INVALID,))
+        if campaign_actions.in_sequence(uow, campaign.campaign_id):
+            raise CommandRejectedError((BlockCode.CAMPAIGN_HAS_ACTIVE_MEMBERS,))
+        return self._campaign_applied(campaign, campaign_actions.complete(uow, campaign, now=now), "COMPLETED")
+
+    @staticmethod
+    def _member_for(uow: UnitOfWork, command: MemberCommand) -> CampaignMember:
+        member = uow.campaign_members.get(command.member_id)
+        if member is None:
+            raise OperatorNotFoundError(f"campaign member {command.member_id} not found")
+        if member.version != command.expected_member_version:
+            raise StaleCommandError((BlockCode.MEMBER_VERSION_CHANGED,))
+        return member
+
+    def _cancel_campaign_member(self, uow: UnitOfWork, command: CancelCampaignMember, now: datetime, operator_id: str) -> _Applied:
+        member = self._member_for(uow, command)
+        if member.status in TERMINAL_MEMBER_STATUSES:
+            raise CommandRejectedError((BlockCode.MEMBER_ENDED,))
+        after = campaign_actions.cancel_member(uow, member, correlation_id=command.correlation_id, now=now)
+        applied = _Applied(disposition="MEMBER_CANCELLED", note=command.note)
+        applied.changed(ref(RefKind.CAMPAIGN_MEMBER, member.member_id), member.version, "member", {"status": member.status.value},
+                        resulting=after.version)
+        return applied
+
+    def _suppress_campaign_member(self, uow: UnitOfWork, command: SuppressCampaignMember, now: datetime, operator_id: str) -> _Applied:
+        member = self._member_for(uow, command)
+        if member.status is CampaignMemberStatus.SUPPRESSED:
+            raise CommandRejectedError((BlockCode.MEMBER_ENDED,))
+        entry_id, cancelled = campaign_actions.suppress_member(uow, member, operator_id=operator_id, command_id=command.command_id,
+                                                               correlation_id=command.correlation_id, now=now)
+        after = uow.campaign_members.get(member.member_id) or member
+        applied = _Applied(disposition="MEMBER_SUPPRESSED", note=command.note)
+        applied.changed(ref(RefKind.CAMPAIGN_MEMBER, member.member_id), member.version, "member", {"status": member.status.value},
+                        resulting=after.version)
+        if entry_id is not None:
+            applied.subjects.append(ref(RefKind.DNC_ENTRY, entry_id))
+        applied.subjects += [ref(RefKind.OUTBOUND_MESSAGE, outbound_id) for outbound_id in cancelled]
+        return applied
+
     # ---- Helpers --------------------------------------------------------------------------
 
     @staticmethod
     def _reply(uow: UnitOfWork, outbound_id: str) -> OutboundMessage:
         outbound = uow.outbound.get(outbound_id)
-        if outbound is None or outbound.kind is not OutboundKind.REPLY:
+        if outbound is None or outbound.kind not in REVIEWABLE_KINDS:
             raise OperatorNotFoundError(f"draft {outbound_id} not found")
         return outbound
 

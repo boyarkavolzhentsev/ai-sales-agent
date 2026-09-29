@@ -16,7 +16,14 @@ from app.operator.errors import (
     StaleCommandError,
 )
 from app.operator.models import (
+    ActivateCampaign,
     ApproveDraft,
+    CancelCampaign,
+    CancelCampaignMember,
+    CompleteCampaign,
+    PauseCampaign,
+    ResumeCampaign,
+    SuppressCampaignMember,
     BlockCode,
     CancelFollowUp,
     CloseConversation,
@@ -43,7 +50,14 @@ from app.operator.models import (
 from app.operator.service import OperatorService
 
 __all__ = [
+    "ActivateCampaign",
     "ApproveDraft",
+    "CancelCampaign",
+    "CancelCampaignMember",
+    "CompleteCampaign",
+    "PauseCampaign",
+    "ResumeCampaign",
+    "SuppressCampaignMember",
     "BlockCode",
     "CancelFollowUp",
     "CloseConversation",

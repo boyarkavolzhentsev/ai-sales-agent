@@ -3,6 +3,12 @@
 from app.core.models.audit import AuditEvent, ProvenanceRecord
 from app.core.models.base import CoreModel
 from app.core.models.campaign import Campaign, CampaignTargetFilter
+from app.core.models.campaign_member import (
+    OPEN_CAMPAIGN_JOB_STATUSES,
+    TERMINAL_MEMBER_STATUSES,
+    CampaignJob,
+    CampaignMember,
+)
 from app.core.models.classification import IntentClassification
 from app.core.models.conversation import (
     OPEN_FOLLOW_UP_JOB_STATUSES,
@@ -31,11 +37,15 @@ from app.core.models.prospect import ProspectCompany, ProspectContact
 from app.core.models.refs import Actor, EntityRef
 
 __all__ = [
+    "OPEN_CAMPAIGN_JOB_STATUSES",
     "OPEN_FOLLOW_UP_JOB_STATUSES",
     "TERMINAL_CONVERSATION_STATUSES",
+    "TERMINAL_MEMBER_STATUSES",
     "Actor",
     "AuditEvent",
     "Campaign",
+    "CampaignJob",
+    "CampaignMember",
     "CampaignTargetFilter",
     "CoreModel",
     "DoNotContactEntry",

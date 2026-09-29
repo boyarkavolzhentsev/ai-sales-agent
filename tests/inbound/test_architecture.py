@@ -12,7 +12,7 @@ INBOUND_DIR = Path(__file__).resolve().parents[2] / "app" / "inbound"
 # app.policy.release only frees reservations of cancelled messages; it never reserves or sends.
 ALLOWED_APP_MODULES = (
     "app.core", "app.persistence", "app.knowledge", "app.llm", "app.inbound", "app.policy.suppression", "app.policy.release",
-    "app.conversation",
+    "app.conversation", "app.campaign",
 )
 FORBIDDEN_MODULES = (
     "smtplib", "imaplib", "poplib", "http", "socket", "ssl", "urllib.request", "requests", "httpx",

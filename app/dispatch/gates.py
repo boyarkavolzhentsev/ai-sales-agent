@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.core.enums import ActorType, OutboundKind, RefKind
-from app.core.models import EmailMessage, EmailThread, OutboundMessage, ProspectContact
+from app.core.models import Campaign, EmailMessage, EmailThread, OutboundMessage, ProspectContact
 from app.dispatch.models import DispatchCode, DispatchConfig
 from app.inbound.records import ref
 from app.llm.claim_check import draft_hash
@@ -25,7 +25,7 @@ from app.operator.models import CommandKind, CommandOutcome
 from app.operator.review import load_draft_context
 from app.persistence import UnitOfWork
 from app.policy import PolicyDecisionResult
-from app.policy.reply import evaluate_reply_policy
+from app.policy.reply import evaluate_send_policy
 
 APPROVAL_EVENT = f"OPERATOR_{CommandKind.APPROVE_DRAFT.value}"
 
@@ -37,7 +37,10 @@ class Binding:
     contact: ProspectContact
     company_domain: str | None
     thread: EmailThread
-    trigger: EmailMessage
+    # The customer message a REPLY answers; None for campaign touches.
+    trigger: EmailMessage | None
+    # The campaign of a campaign touch (FIRST_TOUCH, FOLLOW_UP); None for replies.
+    campaign: Campaign | None = None
 
 
 def approval_codes(uow: UnitOfWork, outbound: OutboundMessage, *, first_attempt: bool) -> list[str]:
@@ -70,6 +73,8 @@ def approval_codes(uow: UnitOfWork, outbound: OutboundMessage, *, first_attempt:
 
 
 def bind(uow: UnitOfWork, outbound: OutboundMessage, config: DispatchConfig) -> tuple[Binding | None, list[str]]:
+    if outbound.kind in (OutboundKind.FIRST_TOUCH, OutboundKind.FOLLOW_UP):
+        return _bind_campaign_touch(uow, outbound, config)
     if outbound.kind is not OutboundKind.REPLY or outbound.thread_id is None:
         return None, [DispatchCode.NOT_OPERATOR_APPROVED]
     context = load_draft_context(uow, outbound)
@@ -95,13 +100,33 @@ def bind(uow: UnitOfWork, outbound: OutboundMessage, config: DispatchConfig) -> 
     return binding, codes
 
 
+def _bind_campaign_touch(uow: UnitOfWork, outbound: OutboundMessage, config: DispatchConfig) -> tuple[Binding | None, list[str]]:
+    """A campaign touch goes to the lead's contact, in the membership's thread (registered at
+    draft time), from the campaign's sending mailbox, which must be one of ours."""
+    thread = uow.threads.get(outbound.thread_id) if outbound.thread_id else None
+    contact = uow.contacts.get(outbound.contact_id)
+    lead = uow.leads.get(outbound.lead_id)
+    campaign = uow.campaigns.get(outbound.campaign_id) if outbound.campaign_id else None
+    if thread is None or contact is None or lead is None or campaign is None:
+        return None, [DispatchCode.RECIPIENT_MISMATCH]
+    codes: list[str] = []
+    if contact.email not in thread.participant_addresses or thread.lead_id != lead.lead_id or lead.contact_id != contact.contact_id:
+        codes.append(DispatchCode.RECIPIENT_MISMATCH)
+    if thread.mailbox != campaign.sending_mailbox or thread.mailbox not in config.sender_mailboxes:
+        codes.append(DispatchCode.SENDER_NOT_ALLOWED)
+    company = uow.companies.get(contact.company_id) if contact.company_id else None
+    return Binding(recipient=contact.email, sender_mailbox=thread.mailbox, contact=contact,
+                   company_domain=company.domain if company else None, thread=thread, trigger=None, campaign=campaign), codes
+
+
 def evaluate_policy(
     uow: UnitOfWork, outbound: OutboundMessage, binding: Binding, config: DispatchConfig, now: datetime
 ) -> PolicyDecisionResult:
-    """Stage 3 outbound policy for a REPLY (shared with Stage 9 via ``app.policy.reply``).
+    """Stage 3 outbound policy for the message's own kind (shared via ``app.policy.reply``):
+    replies without a campaign; campaign touches with their campaign's checks and quotas.
     The message's own ledger entry is excluded so a retry is not counted against itself."""
-    return evaluate_reply_policy(
-        uow, contact=binding.contact, company_domain=binding.company_domain, mailbox=binding.sender_mailbox,
-        limits=config.limits, window=config.window, kill_switch=config.kill_switch, now=now,
+    return evaluate_send_policy(
+        uow, kind=outbound.kind, campaign=binding.campaign, contact=binding.contact, company_domain=binding.company_domain,
+        mailbox=binding.sender_mailbox, limits=config.limits, window=config.window, kill_switch=config.kill_switch, now=now,
         exclude_outbound_id=outbound.outbound_id,
     )

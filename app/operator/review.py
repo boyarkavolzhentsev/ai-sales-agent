@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.core.enums import (
+    CampaignMemberStatus,
     CampaignStatus,
     DNCScope,
     DraftPurpose,
@@ -40,6 +41,8 @@ from app.core.models import (
     Lead,
     OutboundMessage,
 )
+from app.campaign.guards import campaign_blockers_for
+from app.campaign.policy import CampaignBlock
 from app.inbound import stable_id
 from app.inbound.records import Events, ref
 from app.knowledge.retrieval import select_for_query
@@ -50,6 +53,21 @@ from app.persistence import UnitOfWork
 from app.policy.suppression import evaluate_suppression
 
 REVIEWABLE_STATUSES = frozenset({OutboundStatus.DRAFTED, OutboundStatus.PENDING_REVIEW})
+# Replies (Stage 6), and campaign touches (Stage 10).
+REVIEWABLE_KINDS = frozenset({OutboundKind.REPLY, OutboundKind.FIRST_TOUCH, OutboundKind.FOLLOW_UP})
+CAMPAIGN_CODE_MAP: dict[str, BlockCode] = {
+    CampaignBlock.CAMPAIGN_NOT_ACTIVE: BlockCode.CAMPAIGN_INACTIVE,
+    CampaignBlock.CAMPAIGN_ENDED: BlockCode.CAMPAIGN_INACTIVE,
+    CampaignBlock.DO_NOT_CONTACT: BlockCode.CONTACT_SUPPRESSED,
+    CampaignBlock.INVALID_ADDRESS: BlockCode.CONTACT_ADDRESS_INVALID,
+    CampaignBlock.CONVERSATION_ACTIVE: BlockCode.CONVERSATION_ACTIVE,
+    CampaignBlock.DISPATCH_UNRESOLVED: BlockCode.OTHER_OUTBOUND_OUTSTANDING,
+    CampaignBlock.ACCEPTANCE_CONFLICT: BlockCode.OTHER_OUTBOUND_OUTSTANDING,
+    CampaignBlock.OUTBOUND_PENDING: BlockCode.OTHER_OUTBOUND_OUTSTANDING,
+    CampaignBlock.LEAD_CLOSED: BlockCode.LEAD_CLOSED,
+    CampaignBlock.LEAD_ON_HOLD: BlockCode.LEAD_ON_HOLD,
+    CampaignBlock.OPERATOR_REVIEW_OPEN: BlockCode.ESCALATION_OPEN,
+}
 
 
 @dataclass(frozen=True)
@@ -72,7 +90,7 @@ class DraftContext:
     deterministic, cite no evidence and have no query; ``message_id`` is the customer
     message they follow (the last one when the draft was made)."""
 
-    message_id: str
+    message_id: str | None
     claim_check: ClaimCheckResult | None
     cited: tuple[EvidenceLocation, ...]
     query: KnowledgeQuery | None
@@ -85,8 +103,9 @@ class DraftContext:
         if self.claim_check is None:
             return False
         if self.purpose is DraftPurpose.INBOUND_REPLY:
-            return self.query is not None
-        return not self.cited
+            return self.query is not None and self.message_id is not None
+        # Campaign and follow-up drafts: evidence, when cited, must come with its query.
+        return not self.cited or self.query is not None
 
 
 def load_draft_context(uow: UnitOfWork, outbound: OutboundMessage) -> DraftContext | None:
@@ -95,18 +114,22 @@ def load_draft_context(uow: UnitOfWork, outbound: OutboundMessage) -> DraftConte
     if created is None or created.after is None:
         return None
     message_id = next((r.id for r in created.subject_refs if r.kind is RefKind.EMAIL_MESSAGE), None)
-    if message_id is None:
-        return None
     raw_check = created.after.get("claim_check")
     claim_check = ClaimCheckResult.model_validate(raw_check) if isinstance(raw_check, dict) else None
     used = created.after.get("evidence_ids_used")
     used_ids = [str(i) for i in used] if isinstance(used, list) else []
     purpose = DraftPurpose(str(created.after.get("purpose") or DraftPurpose.INBOUND_REPLY.value))
     if purpose is not DraftPurpose.INBOUND_REPLY:
-        # No knowledge of its own: the trigger message's knowledge must not be attached.
-        if used_ids:
+        # Outbound drafts carry their own query and evidence locations in the draft event
+        # (campaign touches); a trigger message's knowledge is never attached to them.
+        own = _locations(created.after.get("evidence"))
+        raw_query = created.after.get("query")
+        own_query = KnowledgeQuery.model_validate(raw_query) if isinstance(raw_query, dict) else None
+        if any(i not in own for i in used_ids):
             return None
-        return DraftContext(message_id, claim_check, (), None, None, None, purpose)
+        return DraftContext(message_id, claim_check, tuple(own[i] for i in used_ids), own_query, None, None, purpose)
+    if message_id is None:
+        return None
 
     knowledge = uow.audit.get(stable_id("ae", message_id, Events.KNOWLEDGE_ASSESSED))
     query: KnowledgeQuery | None = None
@@ -138,6 +161,19 @@ def load_draft_context(uow: UnitOfWork, outbound: OutboundMessage) -> DraftConte
     if len(cited) != len(used_ids):
         return DraftContext(message_id, claim_check, (), query, assessment, classification)
     return DraftContext(message_id, claim_check, cited, query, assessment, classification)
+
+
+def _locations(raw: object) -> dict[str, EvidenceLocation]:
+    locations: dict[str, EvidenceLocation] = {}
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, dict):
+            location = EvidenceLocation(
+                evidence_id=str(item["evidence_id"]), chunk_id=str(item["chunk_id"]),
+                source_id=str(item["source_id"]), source_version=int(str(item["source_version"])),
+                domain=KnowledgeDomain(str(item["domain"])), score=float(str(item["score"])), rank=int(str(item["rank"])),
+            )
+            locations[location.evidence_id] = location
+    return locations
 
 
 def generated_classification(record: IntentClassification | None) -> GeneratedClassification | None:
@@ -180,9 +216,12 @@ def approval_blockers(
 ) -> tuple[BlockCode, ...]:
     """Every reason the draft cannot be approved right now; empty means approvable."""
     blockers: list[BlockCode] = []
-    if outbound.kind is not OutboundKind.REPLY or outbound.status not in REVIEWABLE_STATUSES:
+    if outbound.kind not in REVIEWABLE_KINDS or outbound.status not in REVIEWABLE_STATUSES:
         blockers.append(BlockCode.DRAFT_NOT_REVIEWABLE)
     blockers.extend(reply_gate_blockers(uow, outbound, config.sender, now))
+    # A campaign touch is approvable only while its membership awaits review (Stage 10).
+    campaign_codes = campaign_blockers_for(uow, outbound, now, expected=CampaignMemberStatus.DRAFTED)
+    blockers.extend(CAMPAIGN_CODE_MAP.get(code, BlockCode.CAMPAIGN_MEMBER_NOT_READY) for code in campaign_codes)
     return tuple(dict.fromkeys(blockers))
 
 
@@ -260,16 +299,31 @@ def _content_blockers(
                 external_use=source.external_use, review_by=source.review_by,
             )
         )
-    recheck = check_draft_claims(
-        outbound.subject, outbound.body_final, evidence,
-        trusted_references=(sender.company_name, sender.sender_name),
-    )
+    trusted = [sender.company_name, sender.sender_name]
+    if context.purpose is not DraftPurpose.INBOUND_REPLY:
+        # Outbound drafts may name the prospect from persisted records (never model output);
+        # the current stored values are what the text must still match.
+        contact = uow.contacts.get(outbound.contact_id)
+        company = uow.companies.get(contact.company_id) if contact is not None and contact.company_id else None
+        trusted += [value for value in (contact.name if contact else None, company.name if company else None) if value]
+    recheck = check_draft_claims(outbound.subject, outbound.body_final, evidence, trusted_references=tuple(trusted))
     return [] if recheck.passed else [BlockCode.CLAIM_CHECK_FAILED]
 
 
-def _newer_inbound(uow: UnitOfWork, outbound: OutboundMessage, trigger_message_id: str) -> bool:
-    """The customer wrote again after the message this draft answers."""
+def _newer_inbound(uow: UnitOfWork, outbound: OutboundMessage, trigger_message_id: str | None) -> bool:
+    """The customer wrote again after the message this draft answers. A campaign touch
+    answers nothing: any customer message in its thread, or any conversation activity of
+    the contact since the draft was made, makes it stale."""
     thread = uow.threads.get(outbound.thread_id) if outbound.thread_id else None
+    if trigger_message_id is None:
+        if thread is not None and any(
+            (m := uow.messages.get(i)) is not None and m.direction is EmailDirection.INBOUND for i in thread.message_ids
+        ):
+            return True
+        return any(
+            c.last_inbound_at is not None and c.last_inbound_at >= outbound.created_at
+            for c in uow.conversations.list_by_contact(outbound.contact_id)
+        )
     if thread is None or trigger_message_id not in thread.message_ids:
         return False
     later = thread.message_ids[thread.message_ids.index(trigger_message_id) + 1 :]
