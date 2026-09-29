@@ -26,6 +26,7 @@ from app.core.models import (
     EntityRef,
     Escalation,
     FollowUpPlan,
+    KnowledgeChunk,
     KnowledgeSource,
     Lead,
     OperatorCommand,
@@ -35,7 +36,12 @@ from app.core.models import (
     ProspectContact,
     ProvenanceRecord,
 )
-from app.persistence.records import IdempotencyRecord, LedgerEntry, QuotaReservation
+from app.persistence.records import (
+    IdempotencyRecord,
+    KnowledgeFactRecord,
+    LedgerEntry,
+    QuotaReservation,
+)
 
 
 @runtime_checkable
@@ -184,3 +190,21 @@ class QuotaReservationRepository(Protocol):
     def list_active_for_date(self, policy_date: date) -> list[QuotaReservation]: ...
     def list_active_for_contact(self, contact_id: str) -> list[QuotaReservation]: ...
     def update(self, reservation: QuotaReservation, expected_version: int) -> None: ...
+
+
+@runtime_checkable
+class KnowledgeIndexRepository(Protocol):
+    def add_chunk(self, chunk: KnowledgeChunk) -> None: ...
+    def add_fact(self, fact: KnowledgeFactRecord) -> None: ...
+    def list_chunks(self, source_id: str, source_version: int) -> list[KnowledgeChunk]: ...
+    def list_chunks_for_sources(
+        self, sources: Collection[tuple[str, int]]
+    ) -> list[KnowledgeChunk]: ...
+    def list_facts_for_sources(
+        self, sources: Collection[tuple[str, int]]
+    ) -> list[KnowledgeFactRecord]: ...
+    def match_chunks(
+        self, match_expression: str, sources: Collection[tuple[str, int]]
+    ) -> list[KnowledgeChunk]: ...
+    def rebuild_search_index(self) -> int: ...
+    def count_search_rows(self) -> int: ...

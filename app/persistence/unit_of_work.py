@@ -9,6 +9,7 @@ from app.persistence.repositories.protocols import (
     EscalationRepository,
     FollowUpPlanRepository,
     IdempotencyRepository,
+    KnowledgeIndexRepository,
     KnowledgeSourceMetaRepository,
     LeadRepository,
     OperatorCommandRepository,
@@ -28,6 +29,7 @@ from app.persistence.repositories.sqlite import (
     SqliteEscalationRepository,
     SqliteFollowUpPlanRepository,
     SqliteIdempotencyRepository,
+    SqliteKnowledgeIndexRepository,
     SqliteKnowledgeSourceMetaRepository,
     SqliteLeadRepository,
     SqliteOperatorCommandRepository,
@@ -65,6 +67,7 @@ class UnitOfWork:
         self.audit: AuditRepository = SqliteAuditRepository(tx)
         self.provenance: ProvenanceRepository = SqliteProvenanceRepository(tx)
         self.knowledge_sources: KnowledgeSourceMetaRepository = SqliteKnowledgeSourceMetaRepository(tx)
+        self.knowledge_index: KnowledgeIndexRepository = SqliteKnowledgeIndexRepository(tx)
         self.idempotency: IdempotencyRepository = SqliteIdempotencyRepository(tx)
         self.quota_reservations: QuotaReservationRepository = SqliteQuotaReservationRepository(tx)
 

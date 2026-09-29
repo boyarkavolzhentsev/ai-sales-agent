@@ -13,7 +13,12 @@ from datetime import datetime
 
 from app.persistence.clock import Clock
 from app.persistence.errors import SchemaVersionError
-from app.persistence.schema import V1_INITIAL_SCHEMA, V2_ADD_OUTBOUND_SENDING_AT, V2_QUOTA_SCHEMA
+from app.persistence.schema import (
+    V1_INITIAL_SCHEMA,
+    V2_ADD_OUTBOUND_SENDING_AT,
+    V2_QUOTA_SCHEMA,
+    V3_KNOWLEDGE_INDEX_SCHEMA,
+)
 from app.persistence.serialization import to_utc_text
 
 _CREATE_VERSION_TABLE = """CREATE TABLE IF NOT EXISTS schema_version (
@@ -53,9 +58,15 @@ def v2_quota_reservations(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def v3_knowledge_index(connection: sqlite3.Connection) -> None:
+    for statement in V3_KNOWLEDGE_INDEX_SCHEMA:
+        connection.execute(statement)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial_schema", v1_initial_schema),
     Migration(2, "quota_reservations", v2_quota_reservations),
+    Migration(3, "knowledge_index", v3_knowledge_index),
 )
 
 

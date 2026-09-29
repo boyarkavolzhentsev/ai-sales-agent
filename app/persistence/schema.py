@@ -229,3 +229,42 @@ V2_QUOTA_SCHEMA: tuple[str, ...] = (
     "CREATE INDEX quota_reservations_date_idx ON quota_reservations (policy_date, state)",
     "CREATE INDEX quota_reservations_contact_idx ON quota_reservations (contact_id, state)",
 )
+
+# v3: knowledge index. Knowledge tables never reference operational tables. Chunks and
+# facts are derived from approved source files and can be rebuilt into a fresh database;
+# the FTS table is a derived search index over knowledge_chunks and may be rebuilt at any
+# time. Ingested knowledge versions are immutable: triggers reject UPDATE and DELETE on
+# source metadata, chunks and facts.
+V3_KNOWLEDGE_INDEX_SCHEMA: tuple[str, ...] = (
+    f"""CREATE TABLE knowledge_chunks (
+        chunk_id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        source_version INTEGER NOT NULL,
+        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        content_hash TEXT NOT NULL,
+        {_JSON_DATA},
+        UNIQUE (source_id, source_version, ordinal),
+        FOREIGN KEY (source_id, source_version)
+            REFERENCES knowledge_sources_meta (source_id, version)
+    ) STRICT""",
+    """CREATE TABLE knowledge_facts (
+        source_id TEXT NOT NULL,
+        source_version INTEGER NOT NULL,
+        fact_key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        unit TEXT,
+        chunk_id TEXT NOT NULL REFERENCES knowledge_chunks (chunk_id),
+        PRIMARY KEY (source_id, source_version, fact_key),
+        FOREIGN KEY (source_id, source_version)
+            REFERENCES knowledge_sources_meta (source_id, version)
+    ) STRICT""",
+    "CREATE INDEX knowledge_facts_key_idx ON knowledge_facts (fact_key)",
+    """CREATE VIRTUAL TABLE knowledge_chunks_fts USING fts5(
+        chunk_id UNINDEXED,
+        text,
+        tokenize = 'unicode61 remove_diacritics 2'
+    )""",
+    *_append_only("knowledge_sources_meta"),
+    *_append_only("knowledge_chunks"),
+    *_append_only("knowledge_facts"),
+)

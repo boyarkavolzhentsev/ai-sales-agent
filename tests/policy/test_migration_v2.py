@@ -48,9 +48,11 @@ def test_v1_database_migrates_to_v2_with_backfill(db_path: Path, clock: FrozenCl
     assert "sending_at" not in _columns(db_path, "outbound_messages")
 
     clock.advance(timedelta(days=1))
-    with Database(db_path) as db:
-        assert db.initialize_schema(clock) == 2
-        assert db.schema_version() == latest_version() == 2
+    raw = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        assert apply_migrations(raw, clock, MIGRATIONS[:2]) == 2
+    finally:
+        raw.close()
 
     connection = sqlite3.connect(db_path)
     try:
@@ -71,20 +73,20 @@ def test_v1_database_migrates_to_v2_with_backfill(db_path: Path, clock: FrozenCl
 def test_fresh_database_reaches_latest(db_path: Path, clock: FrozenClock) -> None:
     with Database(db_path) as db:
         assert db.schema_version() == 0
-        assert db.initialize_schema(clock) == latest_version() == len(MIGRATIONS) == 2
+        assert db.initialize_schema(clock) == latest_version() == len(MIGRATIONS)
     assert "sending_at" in _columns(db_path, "outbound_messages")
 
 
 def test_initialize_is_idempotent_across_versions(db_path: Path, clock: FrozenClock) -> None:
     _v1_database(db_path, clock)
     with Database(db_path) as db:
-        assert db.initialize_schema(clock) == 2
-        assert db.initialize_schema(clock) == 2
+        assert db.initialize_schema(clock) == latest_version()
+        assert db.initialize_schema(clock) == latest_version()
     with Database(db_path) as db:
-        assert db.initialize_schema(clock) == 2
+        assert db.initialize_schema(clock) == latest_version()
     connection = sqlite3.connect(db_path, isolation_level=None)
     try:
-        assert current_version(connection) == 2
-        assert connection.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 2
+        assert current_version(connection) == latest_version()
+        assert connection.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == len(MIGRATIONS)
     finally:
         connection.close()

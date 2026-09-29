@@ -66,3 +66,14 @@ class QuotaReservation(CoreModel):
     def _check_timestamps(self) -> Self:
         ensure_not_before(self.updated_at, self.created_at, "updated_at", "created_at")
         return self
+
+
+class KnowledgeFactRecord(CoreModel):
+    """One structured fact from a fact document, tied to the chunk that states it."""
+
+    source_id: EntityId
+    source_version: Version
+    fact_key: NonEmptyStr
+    value: NonEmptyStr
+    unit: NonEmptyStr | None = None
+    chunk_id: EntityId

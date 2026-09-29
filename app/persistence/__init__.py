@@ -15,6 +15,7 @@ from app.persistence.errors import (
 )
 from app.persistence.records import (
     IdempotencyRecord,
+    KnowledgeFactRecord,
     LedgerEntry,
     QuotaReservation,
     QuotaReservationState,
@@ -32,6 +33,7 @@ __all__ = [
     "FrozenClock",
     "IdempotencyRecord",
     "IntegrityError",
+    "KnowledgeFactRecord",
     "LedgerEntry",
     "NotFoundError",
     "PersistenceError",

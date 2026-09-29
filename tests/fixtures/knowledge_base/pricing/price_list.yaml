@@ -1,0 +1,27 @@
+# Fictional prices for tests only.
+metadata:
+  source_id: sample-price-list
+  domain: PRICING_COMMERCIAL
+  title: Sample Widget price list (fictional)
+  version: 2
+  approval_status: APPROVED
+  external_use: EXTERNAL_OK
+  approved_by: sample-approver
+  approved_at: 2026-02-01T09:00:00+00:00
+  effective_from: 2026-02-01T00:00:00+00:00
+  review_by: 2026-08-01T00:00:00+00:00
+  locale: en
+  tags: [pricing, plans]
+  product: sample-widget
+facts:
+  - key: plan.basic.monthly_price
+    value: "100"
+    unit: EUR
+    statement: The Basic plan of the Sample Widget costs 100 EUR per month.
+  - key: plan.team.monthly_price
+    value: "250"
+    unit: EUR
+    statement: The Team plan of the Sample Widget costs 250 EUR per month.
+body: |
+  ## Billing
+  Invoices are issued monthly in EUR.
