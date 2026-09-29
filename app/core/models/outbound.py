@@ -15,6 +15,7 @@ _ALLOWED_DECISIONS: Mapping[OutboundStatus, frozenset[OutboundDecision | None]] 
     OutboundStatus.DRAFTED: frozenset({None, OutboundDecision.ESCALATE}),
     OutboundStatus.PENDING_REVIEW: _SEND_ONLY,
     OutboundStatus.HELD: frozenset({OutboundDecision.HOLD}),
+    OutboundStatus.OPERATOR_APPROVED: _SEND_ONLY,
     OutboundStatus.APPROVED: _SEND_ONLY,
     OutboundStatus.SENDING: _SEND_ONLY,
     OutboundStatus.SENT: _SEND_ONLY,
@@ -90,6 +91,12 @@ class OutboundMessage(CoreModel):
             raise ValueError(f"decision {self.decision} is inconsistent with status {self.status}")
         if self.status in _PERMITTED and (self.send_permit_id is None or self.approved_at is None):
             raise ValueError(f"status {self.status} requires send_permit_id and approved_at")
+        if self.status is OutboundStatus.OPERATOR_APPROVED:
+            # Human approval only: the send gate has not run, so no permit may exist yet.
+            if self.approved_at is None:
+                raise ValueError("status OPERATOR_APPROVED requires approved_at")
+            if self.send_permit_id is not None:
+                raise ValueError("status OPERATOR_APPROVED must not carry a send_permit_id")
         if self.status in _DISPATCHED and self.sending_at is None:
             raise ValueError(f"status {self.status} requires sending_at")
         if (self.sent_at is not None) != (self.status in _DELIVERED):

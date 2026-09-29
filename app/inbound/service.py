@@ -95,11 +95,22 @@ from app.llm import (
 )
 from app.llm.inputs import MAX_EMAIL_BODY_CHARS
 from app.persistence import Clock, Database, DuplicateIdempotencyKeyError, UnitOfWork
+from app.policy.release import release_for_cancelled_message
 from app.policy.suppression import evaluate_suppression
 
 SYSTEM_ACTOR_ID = "system:inbound"
 URGENT_REASONS = frozenset({EscalationReason.LEGAL_OR_COMPLAINT, EscalationReason.INJECTION_SUSPECTED})
 MEETING_INTENTS = frozenset({LeadIntent.MEETING_REQUEST, LeadIntent.POSITIVE_INTEREST, LeadIntent.PRICING_REQUEST})
+# Messages that could still become (or already are) eligible for dispatch.
+UNDISPATCHED_STATUSES = frozenset(
+    {
+        OutboundStatus.DRAFTED,
+        OutboundStatus.PENDING_REVIEW,
+        OutboundStatus.HELD,
+        OutboundStatus.OPERATOR_APPROVED,
+        OutboundStatus.APPROVED,
+    }
+)
 
 
 class _Append(Protocol):
@@ -195,9 +206,9 @@ class InboundService:
         except Exception as exc:  # noqa: BLE001 - fall back to an escalation-only outcome
             if analysis.reasons == (EscalationReason.INTERNAL_ERROR,) and analysis.classification is None:
                 raise InboundProcessingError(f"could not finalize {observation.message_id}") from exc
-            fallback = Analysis(ReplyDecision.ESCALATE).escalate(
-                EscalationReason.INTERNAL_ERROR, detail=f"finalization failed: {type(exc).__name__}"
-            )
+            fallback = Analysis(
+                ReplyDecision.ESCALATE, add_dnc=analysis.add_dnc, close_reason=analysis.close_reason if analysis.add_dnc else None
+            ).escalate(EscalationReason.INTERNAL_ERROR, detail=f"finalization failed: {type(exc).__name__}")
             try:
                 return self._finalize(observation, fallback, correlation_id)
             except Exception as final_exc:  # noqa: BLE001
@@ -602,13 +613,13 @@ class InboundService:
                     uow.dnc.add(entry)
                     append(Events.DNC_ADDED, (ref(RefKind.DNC_ENTRY, entry.entry_id), *lead_refs), {"entry_id": entry.entry_id, "scope": DNCScope.EMAIL.value, "reason": entry.reason.value})
 
-            # Earlier review drafts must not stay reviewable for a suppressed contact or a closed lead.
+            # Earlier drafts, reviewed or not, must not stay eligible for a suppressed contact or a closed lead.
             stale_leads: list[str] = []
             if analysis.add_dnc and observation.contact_id is not None:
                 stale_leads = [found.lead_id for found in uow.leads.list_by_contact(observation.contact_id)]
             elif newly_closed is not None:
                 stale_leads = [newly_closed.lead_id]
-            self._cancel_open_drafts(uow, stale_leads, append)
+            self._cancel_open_drafts(uow, stale_leads, now, append)
 
             draft_id = outbound_id = escalation_id = None
             composition = analysis.composition
@@ -726,21 +737,32 @@ class InboundService:
         return thread is not None and thread.lead_id == lead.lead_id
 
     @staticmethod
-    def _cancel_open_drafts(uow: UnitOfWork, lead_ids: list[str], append: _Append) -> None:
-        cancelled: list[JsonValue] = []
+    def _cancel_open_drafts(uow: UnitOfWork, lead_ids: list[str], now: datetime, append: _Append) -> None:
+        """Cancel every not-yet-dispatched message (reviewable, held or approved, with or
+        without a permit) and, in the same transaction, release any ACTIVE quota
+        reservation it held, so the slot is not counted for the rest of its policy date.
+        Dispatched history (SENDING and later) and CONSUMED reservations are never touched."""
+        cancelled: list[OutboundMessage] = []
+        released: list[JsonValue] = []
         for lead_id in lead_ids:
             for message in uow.outbound.list_by_lead(lead_id):
-                if message.kind is OutboundKind.REPLY and message.status is OutboundStatus.DRAFTED:
+                if message.status in UNDISPATCHED_STATUSES:
                     uow.outbound.update(
                         OutboundMessage.model_validate(
                             message.model_dump() | {"status": OutboundStatus.CANCELLED, "version": message.version + 1}
                         ),
                         message.version,
                     )
-                    cancelled.append(message.outbound_id)
+                    cancelled.append(message)
+                    reservation = release_for_cancelled_message(uow, message.outbound_id, now)
+                    if reservation is not None:
+                        released.append(reservation.reservation_id)
         if cancelled:
-            refs = tuple(ref(RefKind.OUTBOUND_MESSAGE, str(outbound_id)) for outbound_id in cancelled)
-            append(Events.DRAFTS_CANCELLED, refs, {"outbound_ids": cancelled})
+            refs = tuple(ref(RefKind.OUTBOUND_MESSAGE, message.outbound_id) for message in cancelled)
+            append(Events.DRAFTS_CANCELLED, refs, {
+                "cancelled": [{"outbound_id": m.outbound_id, "previous_status": m.status.value} for m in cancelled],
+                "released_reservation_ids": released,
+            })
 
     def _apply_lead_changes(self, uow: UnitOfWork, lead: Lead, analysis: Analysis, now: datetime, append: _Append) -> Lead:
         """Closing for UNSUBSCRIBE applies to any open lead. Everything else (other closures,

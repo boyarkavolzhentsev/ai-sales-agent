@@ -6,8 +6,9 @@ accepted by the provider, so counting it is the conservative choice. A retried m
 leaves FAILED, so it is never counted twice. Every counted status has ``sending_at``,
 which attributes the message to a local policy date.
 
-Not counted: DRAFTED, PENDING_REVIEW, HELD, APPROVED, CANCELLED, SKIPPED. Messages that
-are approved but not yet dispatched are covered by ACTIVE quota reservations instead.
+Not counted: DRAFTED, PENDING_REVIEW, HELD, OPERATOR_APPROVED, APPROVED, CANCELLED, SKIPPED.
+Messages that are approved but not yet dispatched are covered by ACTIVE quota
+reservations instead (only permitted APPROVED messages can reserve).
 """
 
 from collections.abc import Iterable

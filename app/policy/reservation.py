@@ -18,6 +18,7 @@ from app.persistence.records import LedgerEntry, QuotaReservation, QuotaReservat
 from app.policy.errors import DuplicateQuotaReservationError, PolicyError, QuotaExceededError
 from app.policy.limits import LimitPolicy
 from app.policy.quota import COUNTED_STATUSES, build_quota_snapshot, evaluate_quota
+from app.policy.release import release_reservation
 from app.policy.windows import local_date, local_day_bounds_utc
 
 
@@ -53,20 +54,8 @@ def reserve_quota(
         if existing is not None:
             if existing.state is QuotaReservationState.CONSUMED or existing.policy_date >= policy_date:
                 raise DuplicateQuotaReservationError(existing)
-            _release_stale(uow, existing, now)
+            release_reservation(uow, existing, now)
         return _reserve(uow, limits, outbound, reservation_id=reservation_id, now=now, policy_date=policy_date)
-
-
-def _release_stale(uow: UnitOfWork, stale: QuotaReservation, now: datetime) -> None:
-    released = QuotaReservation.model_validate(
-        stale.model_dump()
-        | {
-            "state": QuotaReservationState.RELEASED,
-            "updated_at": max(now, stale.updated_at),
-            "version": stale.version + 1,
-        }
-    )
-    uow.quota_reservations.update(released, expected_version=stale.version)
 
 
 def _reserve(

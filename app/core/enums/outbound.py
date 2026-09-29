@@ -11,6 +11,9 @@ class OutboundStatus(StrEnum):
     DRAFTED = "DRAFTED"
     PENDING_REVIEW = "PENDING_REVIEW"
     HELD = "HELD"
+    # A human reviewer approved the exact content. No send permit exists yet; a future
+    # send gate must re-run every sending check and issue a permit to reach APPROVED.
+    OPERATOR_APPROVED = "OPERATOR_APPROVED"
     APPROVED = "APPROVED"
     SENDING = "SENDING"
     SENT = "SENT"

@@ -9,7 +9,10 @@ import ast
 from pathlib import Path
 
 INBOUND_DIR = Path(__file__).resolve().parents[2] / "app" / "inbound"
-ALLOWED_APP_MODULES = ("app.core", "app.persistence", "app.knowledge", "app.llm", "app.inbound", "app.policy.suppression")
+# app.policy.release only frees reservations of cancelled messages; it never reserves or sends.
+ALLOWED_APP_MODULES = (
+    "app.core", "app.persistence", "app.knowledge", "app.llm", "app.inbound", "app.policy.suppression", "app.policy.release",
+)
 FORBIDDEN_MODULES = (
     "smtplib", "imaplib", "poplib", "http", "socket", "ssl", "urllib.request", "requests", "httpx",
     "aiohttp", "openai", "anthropic", "telegram", "email.mime", "app.policy.reservation", "app.policy.quota",
