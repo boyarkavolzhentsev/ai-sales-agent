@@ -28,7 +28,7 @@ from app.policy.quota import (
     evaluate_quota,
 )
 from app.policy.release import release_for_cancelled_message, release_reservation
-from app.policy.reservation import reserve_quota
+from app.policy.reservation import consume_reservation, reserve_quota
 from app.policy.suppression import SuppressionMatch, evaluate_suppression
 from app.policy.windows import SendingWindow, Weekday, is_within_sending_window
 
@@ -56,6 +56,7 @@ __all__ = [
     "SuppressionMatch",
     "Weekday",
     "build_quota_snapshot",
+    "consume_reservation",
     "evaluate_follow_up_policy",
     "evaluate_outbound_policy",
     "evaluate_quota",

@@ -58,6 +58,23 @@ def reserve_quota(
         return _reserve(uow, limits, outbound, reservation_id=reservation_id, now=now, policy_date=policy_date)
 
 
+def consume_reservation(uow: UnitOfWork, reservation: QuotaReservation, now: datetime) -> QuotaReservation:
+    """ACTIVE -> CONSUMED when the message enters the send ledger (status SENDING).
+
+    From then on the ledger counts the message and the reservation is ignored by
+    ``build_quota_snapshot``, so the slot is never counted twice. Call it in the same
+    transaction that moves the message to SENDING.
+    """
+    if reservation.state is not QuotaReservationState.ACTIVE:
+        raise PolicyError(f"only ACTIVE reservations can be consumed (got {reservation.state})")
+    consumed = QuotaReservation.model_validate(
+        reservation.model_dump()
+        | {"state": QuotaReservationState.CONSUMED, "updated_at": max(now, reservation.updated_at), "version": reservation.version + 1}
+    )
+    uow.quota_reservations.update(consumed, expected_version=reservation.version)
+    return consumed
+
+
 def _reserve(
     uow: UnitOfWork,
     limits: LimitPolicy,

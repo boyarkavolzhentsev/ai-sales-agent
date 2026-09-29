@@ -42,6 +42,7 @@ from app.core.models import (
 from app.inbound import stable_id
 from app.inbound.records import Events, ref
 from app.knowledge.retrieval import select_for_query
+from app.llm import SenderIdentity
 from app.llm.claim_check import ClaimCheckResult, check_draft_claims, draft_hash
 from app.operator.models import BlockCode, EvidenceView, GeneratedClassification, OperatorConfig
 from app.persistence import UnitOfWork
@@ -160,6 +161,18 @@ def approval_blockers(
     blockers: list[BlockCode] = []
     if outbound.kind is not OutboundKind.REPLY or outbound.status not in REVIEWABLE_STATUSES:
         blockers.append(BlockCode.DRAFT_NOT_REVIEWABLE)
+    blockers.extend(reply_gate_blockers(uow, outbound, config.sender, now))
+    return tuple(dict.fromkeys(blockers))
+
+
+def reply_gate_blockers(
+    uow: UnitOfWork, outbound: OutboundMessage, sender: SenderIdentity, now: datetime
+) -> tuple[BlockCode, ...]:
+    """The current-state gates shared by human approval (Stage 7) and dispatch (Stage 8):
+    content integrity, lead/contact/thread association, lead status, suppression,
+    campaign state, evidence usability and deterministic claims at ``now``, and newer
+    customer messages. Status rules are the caller's (they differ per operation)."""
+    blockers: list[BlockCode] = []
     if draft_hash(outbound.subject, outbound.body_final) != outbound.content_hash:
         blockers.append(BlockCode.DRAFT_INTEGRITY_FAILED)
 
@@ -179,7 +192,7 @@ def approval_blockers(
     if context is None or context.claim_check is None or context.query is None:
         blockers.append(BlockCode.DRAFT_CONTEXT_MISSING)
     else:
-        blockers.extend(_content_blockers(uow, outbound, context, config, now))
+        blockers.extend(_content_blockers(uow, outbound, context, sender, now))
         if _newer_inbound(uow, outbound, context.message_id):
             blockers.append(BlockCode.NEWER_INBOUND_MESSAGE)
     return tuple(dict.fromkeys(blockers))
@@ -200,7 +213,7 @@ def _lead_blockers(uow: UnitOfWork, outbound: OutboundMessage, lead: Lead | None
 
 
 def _content_blockers(
-    uow: UnitOfWork, outbound: OutboundMessage, context: DraftContext, config: OperatorConfig, now: datetime
+    uow: UnitOfWork, outbound: OutboundMessage, context: DraftContext, sender: SenderIdentity, now: datetime
 ) -> list[BlockCode]:
     """Evidence must still be usable at ``now`` and the stored text must still pass the
     deterministic claim check against the current text of the cited evidence."""
@@ -225,7 +238,7 @@ def _content_blockers(
         )
     recheck = check_draft_claims(
         outbound.subject, outbound.body_final, evidence,
-        trusted_references=(config.sender.company_name, config.sender.sender_name),
+        trusted_references=(sender.company_name, sender.sender_name),
     )
     return [] if recheck.passed else [BlockCode.CLAIM_CHECK_FAILED]
 

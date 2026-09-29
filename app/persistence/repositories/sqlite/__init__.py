@@ -4,6 +4,7 @@ from app.persistence.repositories.sqlite.audit import SqliteAuditRepository
 from app.persistence.repositories.sqlite.campaigns import SqliteCampaignRepository
 from app.persistence.repositories.sqlite.companies import SqliteProspectCompanyRepository
 from app.persistence.repositories.sqlite.contacts import SqliteProspectContactRepository
+from app.persistence.repositories.sqlite.dispatch_attempts import SqliteDispatchAttemptRepository
 from app.persistence.repositories.sqlite.dnc import SqliteDoNotContactRepository
 from app.persistence.repositories.sqlite.escalations import SqliteEscalationRepository
 from app.persistence.repositories.sqlite.followups import SqliteFollowUpPlanRepository
@@ -26,6 +27,7 @@ from app.persistence.repositories.sqlite.threads import SqliteEmailThreadReposit
 __all__ = [
     "SqliteAuditRepository",
     "SqliteCampaignRepository",
+    "SqliteDispatchAttemptRepository",
     "SqliteDoNotContactRepository",
     "SqliteEmailMessageRepository",
     "SqliteEmailThreadRepository",

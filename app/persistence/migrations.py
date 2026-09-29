@@ -19,6 +19,7 @@ from app.persistence.schema import (
     V2_QUOTA_SCHEMA,
     V3_KNOWLEDGE_INDEX_SCHEMA,
     V4_OPTIONAL_COMPANY_SCHEMA,
+    V5_DISPATCH_ATTEMPTS_SCHEMA,
 )
 from app.persistence.serialization import to_utc_text
 
@@ -73,11 +74,17 @@ def v4_optional_company(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def v5_dispatch_attempts(connection: sqlite3.Connection) -> None:
+    for statement in V5_DISPATCH_ATTEMPTS_SCHEMA:
+        connection.execute(statement)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial_schema", v1_initial_schema),
     Migration(2, "quota_reservations", v2_quota_reservations),
     Migration(3, "knowledge_index", v3_knowledge_index),
     Migration(4, "optional_company", v4_optional_company, foreign_keys_off=True),
+    Migration(5, "dispatch_attempts", v5_dispatch_attempts),
 )
 
 

@@ -309,3 +309,26 @@ V4_OPTIONAL_COMPANY_SCHEMA: tuple[str, ...] = (
     "CREATE INDEX leads_contact_idx ON leads (contact_id)",
     "CREATE INDEX leads_campaign_idx ON leads (campaign_id)",
 )
+
+# v5: durable dispatch attempts. Each row is one claimed hand-off of one outbound message
+# to the email transport, with its embedded single-use send permit. SQL enforces at most
+# one unresolved (CLAIMED or UNKNOWN) attempt and at most one ACCEPTED attempt per message,
+# so no restart or concurrent worker can start a second submission while one is unresolved.
+V5_DISPATCH_ATTEMPTS_SCHEMA: tuple[str, ...] = (
+    f"""CREATE TABLE dispatch_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        outbound_id TEXT NOT NULL REFERENCES outbound_messages (outbound_id),
+        attempt_no INTEGER NOT NULL CHECK (attempt_no >= 1),
+        permit_id TEXT NOT NULL UNIQUE,
+        reservation_id TEXT NOT NULL REFERENCES quota_reservations (reservation_id),
+        state TEXT NOT NULL CHECK (state IN ('CLAIMED', 'ACCEPTED', 'NOT_ACCEPTED', 'UNKNOWN')),
+        claimed_at TEXT NOT NULL,
+        {_VERSIONED_DATA},
+        UNIQUE (outbound_id, attempt_no)
+    ) STRICT""",
+    """CREATE UNIQUE INDEX dispatch_attempts_one_unresolved_per_outbound
+        ON dispatch_attempts (outbound_id) WHERE state IN ('CLAIMED', 'UNKNOWN')""",
+    """CREATE UNIQUE INDEX dispatch_attempts_one_accepted_per_outbound
+        ON dispatch_attempts (outbound_id) WHERE state = 'ACCEPTED'""",
+    "CREATE INDEX dispatch_attempts_state_idx ON dispatch_attempts (state, claimed_at)",
+)

@@ -48,7 +48,7 @@ def test_v3_to_v4_preserves_rows_and_makes_company_optional(tmp_path: Path) -> N
     v3_database(path)
     assert not columns_nullable(path, "contacts")["company_id"]
     with Database(path) as db:
-        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=1))) == latest_version() == 4
+        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=1))) == latest_version() == len(MIGRATIONS)
         with db.transaction() as uow:
             assert uow.companies.get("co-1") == COMPANY
             assert uow.contacts.get("ct-1") == CONTACT
@@ -67,14 +67,14 @@ def test_v3_to_v4_preserves_rows_and_makes_company_optional(tmp_path: Path) -> N
     assert not columns_nullable(path, "leads")["contact_id"]
 
 
-def test_fresh_database_reaches_v4_and_is_idempotent(tmp_path: Path) -> None:
+def test_fresh_database_reaches_latest_and_is_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "fresh.sqlite3"
     with Database(path) as db:
-        assert db.initialize_schema(FrozenClock(NOW)) == 4
-        assert db.initialize_schema(FrozenClock(NOW)) == 4
+        assert db.initialize_schema(FrozenClock(NOW)) == latest_version()
+        assert db.initialize_schema(FrozenClock(NOW)) == latest_version()
     raw = sqlite3.connect(path, isolation_level=None)
     try:
-        assert current_version(raw) == 4
+        assert current_version(raw) == latest_version()
         assert [r[0] for r in raw.execute("SELECT name FROM schema_version ORDER BY version")] == [m.name for m in MIGRATIONS]
         assert raw.execute("SELECT name FROM sqlite_master WHERE name IN ('contacts_v4', 'leads_v4')").fetchall() == []
         indexes = {r[0] for r in raw.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}

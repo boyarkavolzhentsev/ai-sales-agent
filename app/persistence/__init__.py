@@ -14,6 +14,9 @@ from app.persistence.errors import (
     SchemaVersionError,
 )
 from app.persistence.records import (
+    UNRESOLVED_ATTEMPT_STATES,
+    DispatchAttempt,
+    DispatchAttemptState,
     IdempotencyRecord,
     KnowledgeFactRecord,
     LedgerEntry,
@@ -24,11 +27,14 @@ from app.persistence.unit_of_work import UnitOfWork
 
 __all__ = [
     "MEMORY",
+    "UNRESOLVED_ATTEMPT_STATES",
     "AlreadyExistsError",
     "Clock",
     "ConcurrencyError",
     "CorruptRecordError",
     "Database",
+    "DispatchAttempt",
+    "DispatchAttemptState",
     "DuplicateIdempotencyKeyError",
     "FrozenClock",
     "IdempotencyRecord",
