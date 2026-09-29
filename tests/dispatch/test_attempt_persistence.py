@@ -20,10 +20,10 @@ def claimed(db: Database) -> DispatchAttempt:
     return attempt
 
 
-def test_schema_reaches_v5_with_the_dispatch_table(db_path: Path) -> None:
+def test_schema_includes_the_v5_dispatch_table(db_path: Path) -> None:
     raw = sqlite3.connect(db_path)
     try:
-        assert current_version(raw) == latest_version() == len(MIGRATIONS) == 5
+        assert current_version(raw) == latest_version() == len(MIGRATIONS) >= 5
         indexes = {r[0] for r in raw.execute("SELECT name FROM sqlite_master WHERE tbl_name = 'dispatch_attempts' AND type = 'index'")}
     finally:
         raw.close()

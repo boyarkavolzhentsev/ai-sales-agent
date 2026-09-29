@@ -13,7 +13,7 @@ import pytest
 from app.core.enums import DNCScope, LeadIntent, OutboundDecision, OutboundStatus, RefKind
 from app.core.models import EntityRef, OutboundMessage
 from app.inbound import InboundProcessingError
-from app.inbound import service as inbound_module
+from app.conversation import cancellation as cancellation_module
 from app.llm import LLMTask
 from app.persistence import Database, QuotaReservation, QuotaReservationState, UnitOfWork
 from app.policy import QuotaExceededError, release_for_cancelled_message, release_reservation, reserve_quota
@@ -132,7 +132,7 @@ def test_a_release_failure_rolls_back_cancellation_and_release(db: Database, mon
     def broken(*args: object) -> None:
         raise RuntimeError("reservation store unavailable")
 
-    monkeypatch.setattr(inbound_module, "release_for_cancelled_message", broken)
+    monkeypatch.setattr(cancellation_module, "release_for_cancelled_message", broken)
     with pytest.raises(InboundProcessingError):
         unsubscribe(db)
     assert status(db, first.outbound_id) is OutboundStatus.APPROVED  # not cancelled without its release
@@ -153,7 +153,7 @@ def test_a_transient_failure_falls_back_without_losing_the_unsubscribe(db: Datab
             raise RuntimeError("transient")
         return real(uow, outbound_id, now)
 
-    monkeypatch.setattr(inbound_module, "release_for_cancelled_message", flaky)
+    monkeypatch.setattr(cancellation_module, "release_for_cancelled_message", flaky)
     unsubscribe(db)
     assert status(db, first.outbound_id) is OutboundStatus.CANCELLED
     assert reservation(db, "r-1").state is QuotaReservationState.RELEASED

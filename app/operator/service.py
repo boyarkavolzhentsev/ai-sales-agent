@@ -30,6 +30,7 @@ from pydantic import JsonValue
 
 from app.core.enums import (
     ActorType,
+    ConversationStatus,
     EscalationResolution,
     EscalationStatus,
     FollowUpCancelReason,
@@ -42,7 +43,9 @@ from app.core.enums import (
     RefKind,
 )
 from app.core.models import (
+    TERMINAL_CONVERSATION_STATUSES,
     Actor,
+    Conversation,
     AuditEvent,
     EmailMessage,
     EntityRef,
@@ -54,6 +57,10 @@ from app.core.models import (
     OutboundMessage,
 )
 from app.core.models.types import JsonObject
+from app.conversation import FOLLOW_UP_KEY_PREFIX
+from app.conversation import actions as conversation_actions
+from app.conversation.models import ConversationView
+from app.conversation.queries import conversation_view
 from app.inbound import stable_id
 from app.inbound.records import Events, ref
 from app.operator.auth import OperatorAuthenticator, authorize
@@ -66,6 +73,12 @@ from app.operator.errors import (
 )
 from app.operator.models import (
     ApproveDraft,
+    CancelFollowUp,
+    CloseConversation,
+    ConversationCommand,
+    MarkDoNotContact,
+    PauseConversation,
+    ResumeConversation,
     BlockCode,
     CommandKind,
     CommandOutcome,
@@ -114,9 +127,9 @@ class _Applied:
     reason_codes: tuple[str, ...] = ()
     note: str | None = None
 
-    def changed(self, entity: EntityRef, expected: int, key: str, state: JsonValue) -> None:
+    def changed(self, entity: EntityRef, expected: int, key: str, state: JsonValue, resulting: int | None = None) -> None:
         self.subjects.append(entity)
-        self.versions.append(VersionChange(entity=entity, expected=expected, resulting=expected + 1))
+        self.versions.append(VersionChange(entity=entity, expected=expected, resulting=resulting or expected + 1))
         self.before[key] = state
 
 
@@ -239,6 +252,15 @@ class OperatorService:
             messages=tuple(self._text(m) for m in recent if m is not None),
         )
 
+    def get_conversation(self, credential: object, conversation_id: str) -> ConversationView:
+        """Conversation status next to the lead's (separate) pipeline stage, with its follow-ups."""
+        authorize(self._authenticator, self._config, credential)
+        with self._db.transaction() as uow:
+            view = conversation_view(uow, conversation_id)
+        if view is None:
+            raise OperatorNotFoundError(f"conversation {conversation_id} not found")
+        return view
+
     def get_lead(self, credential: object, lead_id: str) -> LeadView:
         authorize(self._authenticator, self._config, credential)
         with self._db.transaction() as uow:
@@ -260,6 +282,21 @@ class OperatorService:
 
     def resolve_escalation(self, credential: object, command: ResolveEscalation) -> CommandResult:
         return self._execute(credential, command, self._resolve)
+
+    def pause_conversation(self, credential: object, command: PauseConversation) -> CommandResult:
+        return self._execute(credential, command, self._pause_conversation)
+
+    def resume_conversation(self, credential: object, command: ResumeConversation) -> CommandResult:
+        return self._execute(credential, command, self._resume_conversation)
+
+    def cancel_follow_up(self, credential: object, command: CancelFollowUp) -> CommandResult:
+        return self._execute(credential, command, self._cancel_follow_up)
+
+    def close_conversation(self, credential: object, command: CloseConversation) -> CommandResult:
+        return self._execute(credential, command, self._close_conversation)
+
+    def mark_do_not_contact(self, credential: object, command: MarkDoNotContact) -> CommandResult:
+        return self._execute(credential, command, self._mark_do_not_contact)
 
     def _execute[C: OperatorCommand](
         self,
@@ -357,6 +394,8 @@ class OperatorService:
             }
         )
         uow.outbound.update(rejected, outbound.version)
+        if outbound.idempotency_key.startswith(FOLLOW_UP_KEY_PREFIX) and outbound.thread_id is not None:
+            conversation_actions.follow_up_draft_rejected(uow, outbound.thread_id, correlation_id=command.correlation_id, now=now)
         applied = _Applied(disposition="REJECTED", reason_codes=(command.reason.value,), note=command.note)
         applied.changed(ref(RefKind.OUTBOUND_MESSAGE, outbound.outbound_id), outbound.version, "outbound", _outbound_state(outbound))
         applied.subjects += [ref(RefKind.MESSAGE_DRAFT, outbound.draft_id), ref(RefKind.LEAD, outbound.lead_id)]
@@ -428,6 +467,75 @@ class OperatorService:
         applied = _Applied(disposition=command.disposition.value, note=command.note)
         applied.changed(ref(RefKind.ESCALATION, escalation.escalation_id), escalation.version, "escalation", {"status": escalation.status.value})
         applied.subjects.append(ref(RefKind.LEAD, escalation.lead_id))
+        return applied
+
+    # ---- Conversation commands (Stage 9) ----------------------------------------------------
+
+    @staticmethod
+    def _conversation(uow: UnitOfWork, command: ConversationCommand) -> Conversation:
+        conversation = uow.conversations.get(command.conversation_id)
+        if conversation is None:
+            raise OperatorNotFoundError(f"conversation {command.conversation_id} not found")
+        if conversation.version != command.expected_conversation_version:
+            raise StaleCommandError((BlockCode.CONVERSATION_VERSION_CHANGED,))
+        return conversation
+
+    @staticmethod
+    def _conversation_applied(before: Conversation, after: Conversation, disposition: str, note: str | None = None) -> _Applied:
+        applied = _Applied(disposition=disposition, note=note)
+        applied.changed(ref(RefKind.CONVERSATION, before.conversation_id), before.version, "conversation",
+                        {"status": before.status.value}, resulting=after.version)
+        applied.subjects.append(ref(RefKind.LEAD, before.lead_id))
+        return applied
+
+    def _pause_conversation(self, uow: UnitOfWork, command: PauseConversation, now: datetime, operator_id: str) -> _Applied:
+        conversation = self._conversation(uow, command)
+        if conversation.status in TERMINAL_CONVERSATION_STATUSES:
+            raise CommandRejectedError((BlockCode.CONVERSATION_ENDED,))
+        if conversation.status is ConversationStatus.PAUSED:
+            raise CommandRejectedError((BlockCode.CONVERSATION_ALREADY_PAUSED,))
+        paused = conversation_actions.pause(uow, conversation, correlation_id=command.correlation_id, now=now)
+        return self._conversation_applied(conversation, paused, ConversationStatus.PAUSED.value)
+
+    def _resume_conversation(self, uow: UnitOfWork, command: ResumeConversation, now: datetime, operator_id: str) -> _Applied:
+        conversation = self._conversation(uow, command)
+        # PAUSED, or OPERATOR_REVIEW once nothing is left to review. Resolving an escalation
+        # never resumes automation by itself (Stage 7); this explicit command does.
+        if conversation.status not in (ConversationStatus.PAUSED, ConversationStatus.OPERATOR_REVIEW):
+            raise CommandRejectedError((BlockCode.CONVERSATION_NOT_RESUMABLE,))
+        if any(e.status in OPEN_ESCALATION_STATUSES for e in uow.escalations.list_by_lead(conversation.lead_id)):
+            raise CommandRejectedError((BlockCode.ESCALATION_OPEN,))
+        resumed = conversation_actions.resume(uow, conversation, correlation_id=command.correlation_id, now=now)
+        return self._conversation_applied(conversation, resumed, resumed.status.value)
+
+    def _cancel_follow_up(self, uow: UnitOfWork, command: CancelFollowUp, now: datetime, operator_id: str) -> _Applied:
+        conversation = self._conversation(uow, command)
+        after, stopped = conversation_actions.cancel_follow_up(uow, conversation, correlation_id=command.correlation_id, now=now)
+        if not stopped:
+            raise CommandRejectedError((BlockCode.NO_FOLLOW_UP_TO_CANCEL,))
+        return self._conversation_applied(conversation, after, "FOLLOW_UP_CANCELLED")
+
+    def _close_conversation(self, uow: UnitOfWork, command: CloseConversation, now: datetime, operator_id: str) -> _Applied:
+        conversation = self._conversation(uow, command)
+        if conversation.status in TERMINAL_CONVERSATION_STATUSES:
+            raise CommandRejectedError((BlockCode.CONVERSATION_ENDED,))
+        closed = conversation_actions.close(uow, conversation, correlation_id=command.correlation_id, now=now)
+        return self._conversation_applied(conversation, closed, ConversationStatus.CLOSED.value, command.note)
+
+    def _mark_do_not_contact(self, uow: UnitOfWork, command: MarkDoNotContact, now: datetime, operator_id: str) -> _Applied:
+        conversation = self._conversation(uow, command)
+        if conversation.status is ConversationStatus.DO_NOT_CONTACT:
+            raise CommandRejectedError((BlockCode.CONVERSATION_ENDED,))
+        entry_id, cancelled = conversation_actions.mark_do_not_contact(
+            uow, conversation, operator_id=operator_id, command_id=command.command_id,
+            correlation_id=command.correlation_id, now=now,
+        )
+        after = uow.conversations.get(conversation.conversation_id) or conversation
+        applied = self._conversation_applied(conversation, after, ConversationStatus.DO_NOT_CONTACT.value, command.note)
+        if entry_id is not None:
+            applied.subjects.append(ref(RefKind.DNC_ENTRY, entry_id))
+        applied.subjects += [ref(RefKind.OUTBOUND_MESSAGE, outbound_id) for outbound_id in cancelled]
+        applied.reason_codes = tuple(f"CANCELLED:{outbound_id}" for outbound_id in cancelled)
         return applied
 
     # ---- Helpers --------------------------------------------------------------------------

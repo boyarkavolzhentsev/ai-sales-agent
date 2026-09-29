@@ -7,6 +7,7 @@ from app.core.enums.campaign import (
     CampaignStatus,
     is_review_mode_supported_v1,
 )
+from app.core.enums.conversation import ConversationStatus, FollowUpJobStatus
 from app.core.enums.dnc import DNCReason, DNCScope
 from app.core.enums.email import EmailDirection
 from app.core.enums.escalation import (
@@ -58,6 +59,7 @@ __all__ = [
     "ContactDepartment",
     "ContactSource",
     "ContactType",
+    "ConversationStatus",
     "DNCReason",
     "DNCScope",
     "DraftPurpose",
@@ -69,6 +71,7 @@ __all__ = [
     "EscalationSeverity",
     "EscalationStatus",
     "FollowUpCancelReason",
+    "FollowUpJobStatus",
     "FollowUpStatus",
     "IcpFit",
     "KnowledgeApprovalStatus",

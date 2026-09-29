@@ -3,11 +3,13 @@ from contextlib import AbstractContextManager
 from app.persistence.repositories.protocols import (
     AuditRepository,
     CampaignRepository,
+    ConversationRepository,
     DispatchAttemptRepository,
     DoNotContactRepository,
     EmailMessageRepository,
     EmailThreadRepository,
     EscalationRepository,
+    FollowUpJobRepository,
     FollowUpPlanRepository,
     IdempotencyRepository,
     KnowledgeIndexRepository,
@@ -24,11 +26,13 @@ from app.persistence.repositories.protocols import (
 from app.persistence.repositories.sqlite import (
     SqliteAuditRepository,
     SqliteCampaignRepository,
+    SqliteConversationRepository,
     SqliteDispatchAttemptRepository,
     SqliteDoNotContactRepository,
     SqliteEmailMessageRepository,
     SqliteEmailThreadRepository,
     SqliteEscalationRepository,
+    SqliteFollowUpJobRepository,
     SqliteFollowUpPlanRepository,
     SqliteIdempotencyRepository,
     SqliteKnowledgeIndexRepository,
@@ -73,6 +77,8 @@ class UnitOfWork:
         self.idempotency: IdempotencyRepository = SqliteIdempotencyRepository(tx)
         self.quota_reservations: QuotaReservationRepository = SqliteQuotaReservationRepository(tx)
         self.dispatch_attempts: DispatchAttemptRepository = SqliteDispatchAttemptRepository(tx)
+        self.conversations: ConversationRepository = SqliteConversationRepository(tx)
+        self.follow_up_jobs: FollowUpJobRepository = SqliteFollowUpJobRepository(tx)
 
     def savepoint(self) -> AbstractContextManager[None]:
         """All-or-nothing sub-unit: writes inside it are undone if it raises, while the

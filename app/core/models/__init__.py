@@ -4,6 +4,12 @@ from app.core.models.audit import AuditEvent, ProvenanceRecord
 from app.core.models.base import CoreModel
 from app.core.models.campaign import Campaign, CampaignTargetFilter
 from app.core.models.classification import IntentClassification
+from app.core.models.conversation import (
+    OPEN_FOLLOW_UP_JOB_STATUSES,
+    TERMINAL_CONVERSATION_STATUSES,
+    Conversation,
+    FollowUpJob,
+)
 from app.core.models.dnc import DoNotContactEntry
 from app.core.models.draft import EvidenceCitation, MessageDraft
 from app.core.models.email import EmailMessage, EmailThread
@@ -25,6 +31,8 @@ from app.core.models.prospect import ProspectCompany, ProspectContact
 from app.core.models.refs import Actor, EntityRef
 
 __all__ = [
+    "OPEN_FOLLOW_UP_JOB_STATUSES",
+    "TERMINAL_CONVERSATION_STATUSES",
     "Actor",
     "AuditEvent",
     "Campaign",
@@ -36,6 +44,8 @@ __all__ = [
     "EntityRef",
     "Escalation",
     "EvidenceCitation",
+    "Conversation",
+    "FollowUpJob",
     "FollowUpPlan",
     "IntentClassification",
     "KnowledgeAssessment",

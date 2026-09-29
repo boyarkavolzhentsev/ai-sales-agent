@@ -16,22 +16,16 @@ the thread. It is sent from the thread's mailbox, which must be one of ours.
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.core.enums import ActorType, DNCScope, OutboundKind, RefKind
-from app.core.models import DoNotContactEntry, EmailMessage, EmailThread, OutboundMessage, ProspectContact
+from app.core.enums import ActorType, OutboundKind, RefKind
+from app.core.models import EmailMessage, EmailThread, OutboundMessage, ProspectContact
 from app.dispatch.models import DispatchCode, DispatchConfig
 from app.inbound.records import ref
 from app.llm.claim_check import draft_hash
 from app.operator.models import CommandKind, CommandOutcome
 from app.operator.review import load_draft_context
 from app.persistence import UnitOfWork
-from app.policy import (
-    COUNTED_STATUSES,
-    PolicyContext,
-    PolicyDecisionResult,
-    build_quota_snapshot,
-    evaluate_outbound_policy,
-)
-from app.policy.windows import local_date, local_day_bounds_utc
+from app.policy import PolicyDecisionResult
+from app.policy.reply import evaluate_reply_policy
 
 APPROVAL_EVENT = f"OPERATOR_{CommandKind.APPROVE_DRAFT.value}"
 
@@ -104,39 +98,10 @@ def bind(uow: UnitOfWork, outbound: OutboundMessage, config: DispatchConfig) -> 
 def evaluate_policy(
     uow: UnitOfWork, outbound: OutboundMessage, binding: Binding, config: DispatchConfig, now: datetime
 ) -> PolicyDecisionResult:
-    """Stage 3 outbound policy for a REPLY: suppression, bounced address, kill switch,
-    sending window and quota. The message's own ledger entry (a FAILED earlier attempt
-    being retried) is excluded: a retry moves the same message back into SENDING, so it
-    is counted once, never twice."""
-    tz = config.limits.timezone
-    day_start, day_end = local_day_bounds_utc(local_date(now, tz), tz)
-    entries = uow.outbound.list_ledger_entries(COUNTED_STATUSES, day_start, day_end)
-    entries += uow.outbound.list_ledger_entries_for_contact(binding.contact.contact_id, COUNTED_STATUSES)
-    entries = [e for e in entries if e.outbound_id != outbound.outbound_id]
-    reservations = uow.quota_reservations.list_active_for_date(local_date(now, tz))
-    reservations += uow.quota_reservations.list_active_for_contact(binding.contact.contact_id)
-    quota = build_quota_snapshot(
-        entries, reservations, now=now, timezone=tz, mailbox=binding.sender_mailbox, campaign_id=None,
-        contact_id=binding.contact.contact_id,
+    """Stage 3 outbound policy for a REPLY (shared with Stage 9 via ``app.policy.reply``).
+    The message's own ledger entry is excluded so a retry is not counted against itself."""
+    return evaluate_reply_policy(
+        uow, contact=binding.contact, company_domain=binding.company_domain, mailbox=binding.sender_mailbox,
+        limits=config.limits, window=config.window, kill_switch=config.kill_switch, now=now,
+        exclude_outbound_id=outbound.outbound_id,
     )
-    return evaluate_outbound_policy(
-        PolicyContext(
-            now=now,
-            kind=OutboundKind.REPLY,
-            contact=binding.contact,
-            company_domain=binding.company_domain,
-            suppression_entries=tuple(_dnc_entries(uow, binding)),
-            kill_switch=config.kill_switch,
-            window=config.window,
-            limits=config.limits,
-            quota=quota,
-        )
-    )
-
-
-def _dnc_entries(uow: UnitOfWork, binding: Binding) -> list[DoNotContactEntry]:
-    email = binding.contact.email
-    entries = list(uow.dnc.list_for_value(DNCScope.EMAIL, email))
-    for domain in sorted({email.split("@", 1)[1], *([binding.company_domain] if binding.company_domain else [])}):
-        entries.extend(uow.dnc.list_for_value(DNCScope.DOMAIN, domain))
-    return entries

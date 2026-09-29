@@ -49,6 +49,8 @@ from pydantic import JsonValue
 from app.core.enums import ActorType, EmailDirection, OutboundDecision, OutboundKind, OutboundStatus, RefKind
 from app.core.models import Actor, AuditEvent, EmailMessage, EmailThread, EntityRef, OutboundMessage, SendPermit
 from app.core.models.types import JsonObject
+from app.conversation import state as conversation_state
+from app.conversation.guards import follow_up_dispatch_blockers
 from app.dispatch.errors import DispatchNotFoundError, DispatchStateError
 from app.dispatch.gates import Binding, approval_codes, bind, evaluate_policy
 from app.dispatch.models import (
@@ -229,6 +231,8 @@ class DispatchService:
         binding, binding_codes = bind(uow, outbound, self._config)
         codes += binding_codes
         codes += [code.value for code in reply_gate_blockers(uow, outbound, self._config.sender, now)]
+        # A follow-up draft also needs its conversation to still allow follow-ups (Stage 9).
+        codes += follow_up_dispatch_blockers(uow, outbound, now)
         if binding is not None:
             policy = evaluate_policy(uow, outbound, binding, self._config, now)
             if policy.decision is not OutboundDecision.SEND:
@@ -430,6 +434,7 @@ class DispatchService:
                "rfc_message_id": attempt.rfc_message_id, "failure_reason": None, "version": outbound.version + 1}
         )
         uow.outbound.update(sent, outbound.version)
+        conversation_state.record_outbound_accepted(uow, sent, correlation_id=attempt.correlation_id, now=now)
         # Record our message in its thread so the customer's reply to it threads normally.
         thread = uow.threads.get(outbound.thread_id or "")
         if thread is not None:

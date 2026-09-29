@@ -95,22 +95,14 @@ from app.llm import (
 )
 from app.llm.inputs import MAX_EMAIL_BODY_CHARS
 from app.persistence import Clock, Database, DuplicateIdempotencyKeyError, UnitOfWork
-from app.policy.release import release_for_cancelled_message
+from app.conversation import state as conversation_state
+from app.conversation.cancellation import cancel_undispatched
 from app.policy.suppression import evaluate_suppression
 
 SYSTEM_ACTOR_ID = "system:inbound"
 URGENT_REASONS = frozenset({EscalationReason.LEGAL_OR_COMPLAINT, EscalationReason.INJECTION_SUSPECTED})
 MEETING_INTENTS = frozenset({LeadIntent.MEETING_REQUEST, LeadIntent.POSITIVE_INTEREST, LeadIntent.PRICING_REQUEST})
 # Messages that could still become (or already are) eligible for dispatch.
-UNDISPATCHED_STATUSES = frozenset(
-    {
-        OutboundStatus.DRAFTED,
-        OutboundStatus.PENDING_REVIEW,
-        OutboundStatus.HELD,
-        OutboundStatus.OPERATOR_APPROVED,
-        OutboundStatus.APPROVED,
-    }
-)
 
 
 class _Append(Protocol):
@@ -306,6 +298,14 @@ class InboundService:
                 is_auto_generated=outcome in (PrefilterOutcome.BOUNCE, PrefilterOutcome.AUTO_SUBMITTED),
             )
         )
+        if outcome is PrefilterOutcome.NONE and contact_id is not None and lead_id is not None:
+            # Supersedes pending follow-ups before any analysis starts, so a follow-up that is
+            # due right now cannot be executed or dispatched against this newer message.
+            conversation_state.record_inbound_activity(
+                uow, thread_id=thread.thread_id, lead_id=lead_id, contact_id=contact_id, message_id=message_id,
+                received_at=envelope.received_at, certain=not (match.ambiguous or ambiguous_lead or match.unverified),
+                correlation_id=correlation_id, now=now,
+            )
         observation = Observation(
             message_id=message_id,
             thread_id=thread.thread_id,
@@ -680,6 +680,11 @@ class InboundService:
                     "created_at": now.isoformat(),
                 })
 
+            conversation_state.record_inbound_outcome(
+                uow, thread_id=observation.thread_id, contact_id=observation.contact_id,
+                lead=uow.leads.get(observation.lead_id) if observation.lead_id else None, dnc_added=analysis.add_dnc,
+                escalated=analysis.decision is ReplyDecision.ESCALATE, correlation_id=correlation_id, now=now,
+            )
             result = InboundResult(
                 correlation_id=correlation_id,
                 message_id=message_id,
@@ -743,25 +748,16 @@ class InboundService:
         reservation it held, so the slot is not counted for the rest of its policy date.
         Dispatched history (SENDING and later) and CONSUMED reservations are never touched."""
         cancelled: list[OutboundMessage] = []
-        released: list[JsonValue] = []
+        released: list[str] = []
         for lead_id in lead_ids:
-            for message in uow.outbound.list_by_lead(lead_id):
-                if message.status in UNDISPATCHED_STATUSES:
-                    uow.outbound.update(
-                        OutboundMessage.model_validate(
-                            message.model_dump() | {"status": OutboundStatus.CANCELLED, "version": message.version + 1}
-                        ),
-                        message.version,
-                    )
-                    cancelled.append(message)
-                    reservation = release_for_cancelled_message(uow, message.outbound_id, now)
-                    if reservation is not None:
-                        released.append(reservation.reservation_id)
+            done, freed = cancel_undispatched(uow, uow.outbound.list_by_lead(lead_id), now)
+            cancelled += done
+            released += freed
         if cancelled:
             refs = tuple(ref(RefKind.OUTBOUND_MESSAGE, message.outbound_id) for message in cancelled)
             append(Events.DRAFTS_CANCELLED, refs, {
                 "cancelled": [{"outbound_id": m.outbound_id, "previous_status": m.status.value} for m in cancelled],
-                "released_reservation_ids": released,
+                "released_reservation_ids": list[JsonValue](released),
             })
 
     def _apply_lead_changes(self, uow: UnitOfWork, lead: Lead, analysis: Analysis, now: datetime, append: _Append) -> Lead:

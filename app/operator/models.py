@@ -71,6 +71,12 @@ class CommandKind(StrEnum):
     REJECT_DRAFT = "REJECT_DRAFT"
     TAKE_OWNERSHIP = "TAKE_OWNERSHIP"
     RESOLVE_ESCALATION = "RESOLVE_ESCALATION"
+    # Conversation and follow-up control (Stage 9).
+    PAUSE_CONVERSATION = "PAUSE_CONVERSATION"
+    RESUME_CONVERSATION = "RESUME_CONVERSATION"
+    CANCEL_FOLLOW_UP = "CANCEL_FOLLOW_UP"
+    CLOSE_CONVERSATION = "CLOSE_CONVERSATION"
+    MARK_DO_NOT_CONTACT = "MARK_DO_NOT_CONTACT"
 
 
 class RejectReason(StrEnum):
@@ -106,6 +112,12 @@ class BlockCode(StrEnum):
     ESCALATION_VERSION_CHANGED = "ESCALATION_VERSION_CHANGED"
     ESCALATION_NOT_OPEN = "ESCALATION_NOT_OPEN"
     DISPOSITION_REQUIRES_DRAFT_COMMAND = "DISPOSITION_REQUIRES_DRAFT_COMMAND"
+    CONVERSATION_VERSION_CHANGED = "CONVERSATION_VERSION_CHANGED"
+    CONVERSATION_ENDED = "CONVERSATION_ENDED"
+    CONVERSATION_ALREADY_PAUSED = "CONVERSATION_ALREADY_PAUSED"
+    CONVERSATION_NOT_RESUMABLE = "CONVERSATION_NOT_RESUMABLE"
+    ESCALATION_OPEN = "ESCALATION_OPEN"
+    NO_FOLLOW_UP_TO_CANCEL = "NO_FOLLOW_UP_TO_CANCEL"
 
 
 class _Command(CoreModel):
@@ -155,7 +167,37 @@ class ResolveEscalation(_Command):
     note: OperatorNote
 
 
-OperatorCommand = ApproveDraft | RejectDraft | TakeOwnership | ResolveEscalation
+class _ConversationCommand(_Command):
+    """Applies to one conversation as the operator saw it (``expected_conversation_version``)."""
+
+    conversation_id: EntityId
+    expected_conversation_version: Version
+
+
+class PauseConversation(_ConversationCommand):
+    kind: Literal[CommandKind.PAUSE_CONVERSATION] = CommandKind.PAUSE_CONVERSATION
+
+
+class ResumeConversation(_ConversationCommand):
+    kind: Literal[CommandKind.RESUME_CONVERSATION] = CommandKind.RESUME_CONVERSATION
+
+
+class CancelFollowUp(_ConversationCommand):
+    kind: Literal[CommandKind.CANCEL_FOLLOW_UP] = CommandKind.CANCEL_FOLLOW_UP
+
+
+class CloseConversation(_ConversationCommand):
+    kind: Literal[CommandKind.CLOSE_CONVERSATION] = CommandKind.CLOSE_CONVERSATION
+    note: OperatorNote | None = None
+
+
+class MarkDoNotContact(_ConversationCommand):
+    kind: Literal[CommandKind.MARK_DO_NOT_CONTACT] = CommandKind.MARK_DO_NOT_CONTACT
+    note: OperatorNote | None = None
+
+
+ConversationCommand = PauseConversation | ResumeConversation | CancelFollowUp | CloseConversation | MarkDoNotContact
+OperatorCommand = ApproveDraft | RejectDraft | TakeOwnership | ResolveEscalation | ConversationCommand
 
 
 class VersionChange(CoreModel):

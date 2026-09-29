@@ -132,7 +132,9 @@ def test_in_flight_rejection_after_unsubscribe_is_never_retried(db: Database) ->
 # ---- I. Boundaries ----------------------------------------------------------------------------
 
 DISPATCH_DIR = Path(__file__).resolve().parents[2] / "app" / "dispatch"
-ALLOWED_APP_MODULES = ("app.core", "app.persistence", "app.policy", "app.llm", "app.inbound", "app.operator", "app.dispatch")
+ALLOWED_APP_MODULES = (
+    "app.core", "app.persistence", "app.policy", "app.llm", "app.inbound", "app.operator", "app.dispatch", "app.conversation",
+)
 FORBIDDEN_MODULES = (
     "smtplib", "imaplib", "poplib", "http", "socket", "ssl", "urllib", "requests", "httpx", "aiohttp", "openai",
     "anthropic", "telegram", "email", "asyncio", "app.knowledge.ingestion",

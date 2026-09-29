@@ -332,3 +332,42 @@ V5_DISPATCH_ATTEMPTS_SCHEMA: tuple[str, ...] = (
         ON dispatch_attempts (outbound_id) WHERE state = 'ACCEPTED'""",
     "CREATE INDEX dispatch_attempts_state_idx ON dispatch_attempts (state, claimed_at)",
 )
+
+# v6: conversation state and durable follow-up jobs. One conversation per email thread.
+# Each follow-up job is one logical follow-up ("number N after outbound message X"), unique
+# by that identity; SQL also allows at most one open (SCHEDULED or CLAIMED) job per
+# conversation and at most one job per produced follow-up draft.
+V6_CONVERSATIONS_SCHEMA: tuple[str, ...] = (
+    f"""CREATE TABLE conversations (
+        conversation_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL UNIQUE REFERENCES email_threads (thread_id),
+        lead_id TEXT NOT NULL REFERENCES leads (lead_id),
+        contact_id TEXT NOT NULL REFERENCES contacts (contact_id),
+        status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'WAITING_FOR_REPLY', 'FOLLOW_UP_DUE',
+            'OPERATOR_REVIEW', 'PAUSED', 'CONVERTED', 'CLOSED', 'DO_NOT_CONTACT')),
+        next_follow_up_at TEXT,
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA}
+    ) STRICT""",
+    "CREATE INDEX conversations_lead_idx ON conversations (lead_id)",
+    "CREATE INDEX conversations_contact_idx ON conversations (contact_id)",
+    "CREATE INDEX conversations_status_idx ON conversations (status, next_follow_up_at)",
+    f"""CREATE TABLE follow_up_jobs (
+        follow_up_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES conversations (conversation_id),
+        anchor_outbound_id TEXT NOT NULL REFERENCES outbound_messages (outbound_id),
+        sequence_no INTEGER NOT NULL CHECK (sequence_no >= 1),
+        status TEXT NOT NULL CHECK (status IN ('SCHEDULED', 'CLAIMED', 'COMPLETED', 'CANCELLED',
+            'BLOCKED', 'SUPERSEDED')),
+        due_at TEXT NOT NULL,
+        lease_expires_at TEXT,
+        outbound_id TEXT UNIQUE REFERENCES outbound_messages (outbound_id),
+        created_at TEXT NOT NULL,
+        {_VERSIONED_DATA},
+        UNIQUE (conversation_id, anchor_outbound_id, sequence_no)
+    ) STRICT""",
+    """CREATE UNIQUE INDEX follow_up_jobs_one_open_per_conversation
+        ON follow_up_jobs (conversation_id) WHERE status IN ('SCHEDULED', 'CLAIMED')""",
+    "CREATE INDEX follow_up_jobs_due_idx ON follow_up_jobs (status, due_at)",
+    "CREATE INDEX follow_up_jobs_lease_idx ON follow_up_jobs (status, lease_expires_at)",
+)

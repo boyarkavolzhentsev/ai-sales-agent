@@ -22,6 +22,7 @@ from datetime import datetime
 from app.core.enums import (
     CampaignStatus,
     DNCScope,
+    DraftPurpose,
     EmailDirection,
     KnowledgeDomain,
     LeadStage,
@@ -64,7 +65,12 @@ class EvidenceLocation:
 
 @dataclass(frozen=True)
 class DraftContext:
-    """Immutable Stage 6 facts about how a draft was produced."""
+    """Immutable facts about how a draft was produced.
+
+    INBOUND_REPLY drafts (Stage 6) answer ``message_id`` from knowledge: they need their
+    knowledge query and cited evidence. OUTBOUND_FOLLOW_UP drafts (Stage 9) are
+    deterministic, cite no evidence and have no query; ``message_id`` is the customer
+    message they follow (the last one when the draft was made)."""
 
     message_id: str
     claim_check: ClaimCheckResult | None
@@ -72,6 +78,15 @@ class DraftContext:
     query: KnowledgeQuery | None
     assessment: KnowledgeAssessment | None
     classification: IntentClassification | None
+    purpose: DraftPurpose = DraftPurpose.INBOUND_REPLY
+
+    @property
+    def complete(self) -> bool:
+        if self.claim_check is None:
+            return False
+        if self.purpose is DraftPurpose.INBOUND_REPLY:
+            return self.query is not None
+        return not self.cited
 
 
 def load_draft_context(uow: UnitOfWork, outbound: OutboundMessage) -> DraftContext | None:
@@ -86,6 +101,12 @@ def load_draft_context(uow: UnitOfWork, outbound: OutboundMessage) -> DraftConte
     claim_check = ClaimCheckResult.model_validate(raw_check) if isinstance(raw_check, dict) else None
     used = created.after.get("evidence_ids_used")
     used_ids = [str(i) for i in used] if isinstance(used, list) else []
+    purpose = DraftPurpose(str(created.after.get("purpose") or DraftPurpose.INBOUND_REPLY.value))
+    if purpose is not DraftPurpose.INBOUND_REPLY:
+        # No knowledge of its own: the trigger message's knowledge must not be attached.
+        if used_ids:
+            return None
+        return DraftContext(message_id, claim_check, (), None, None, None, purpose)
 
     knowledge = uow.audit.get(stable_id("ae", message_id, Events.KNOWLEDGE_ASSESSED))
     query: KnowledgeQuery | None = None
@@ -189,7 +210,7 @@ def reply_gate_blockers(
                 blockers.append(BlockCode.CAMPAIGN_INACTIVE)
 
     context = load_draft_context(uow, outbound)
-    if context is None or context.claim_check is None or context.query is None:
+    if context is None or not context.complete:
         blockers.append(BlockCode.DRAFT_CONTEXT_MISSING)
     else:
         blockers.extend(_content_blockers(uow, outbound, context, sender, now))
@@ -217,20 +238,23 @@ def _content_blockers(
 ) -> list[BlockCode]:
     """Evidence must still be usable at ``now`` and the stored text must still pass the
     deterministic claim check against the current text of the cited evidence."""
-    if context.claim_check is None or context.query is None:
+    query = context.query
+    if context.claim_check is None or not context.complete:
         return [BlockCode.DRAFT_CONTEXT_MISSING]
     if not context.claim_check.passed or context.claim_check.draft_hash != outbound.content_hash:
         return [BlockCode.CLAIM_CHECK_FAILED]
-    usable = _usable_keys(uow, context.query, now)
+    usable = _usable_keys(uow, query, now)
     evidence: list[KnowledgeEvidence] = []
     for location in context.cited:
+        if query is None:
+            return [BlockCode.DRAFT_CONTEXT_MISSING]
         text = _chunk_text(uow, location)
         source = uow.knowledge_sources.get(location.source_id, location.source_version)
         if text is None or source is None or (location.source_id, location.source_version) not in usable:
             return [BlockCode.EVIDENCE_UNUSABLE]
         evidence.append(
             KnowledgeEvidence(
-                evidence_id=location.evidence_id, query_id=context.query.query_id, chunk_id=location.chunk_id,
+                evidence_id=location.evidence_id, query_id=query.query_id, chunk_id=location.chunk_id,
                 source_id=location.source_id, source_version=location.source_version, domain=location.domain,
                 excerpt=text, score=location.score, rank=location.rank, approval_status=source.approval_status,
                 external_use=source.external_use, review_by=source.review_by,
