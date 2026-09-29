@@ -24,14 +24,15 @@ def _tables(path: Path) -> set[str]:
 
 def test_fresh_database_applies_v1_v2_v3(db_path: Path) -> None:
     with Database(db_path) as db:
-        assert db.initialize_schema(FrozenClock(NOW)) == latest_version() == 3
+        assert db.initialize_schema(FrozenClock(NOW)) == latest_version() == len(MIGRATIONS)
     assert V3_TABLES <= _tables(db_path)
     connection = sqlite3.connect(db_path)
     try:
         names = [row[0] for row in connection.execute("SELECT name FROM schema_version ORDER BY version")]
     finally:
         connection.close()
-    assert names == ["initial_schema", "quota_reservations", "knowledge_index"]
+    assert names[:3] == ["initial_schema", "quota_reservations", "knowledge_index"]
+    assert names == [m.name for m in MIGRATIONS]
 
 
 def test_v2_database_migrates_to_v3_and_protects_existing_knowledge(db_path: Path) -> None:
@@ -51,7 +52,7 @@ def test_v2_database_migrates_to_v3_and_protects_existing_knowledge(db_path: Pat
     assert not V3_TABLES & _tables(db_path)
 
     with Database(db_path) as db:
-        assert db.initialize_schema(FrozenClock(NOW)) == 3
+        assert db.initialize_schema(FrozenClock(NOW)) == latest_version()
         with db.transaction() as uow:
             assert uow.knowledge_sources.get("src-sample", 1) == source
     assert V3_TABLES <= _tables(db_path)
@@ -66,12 +67,12 @@ def test_v2_database_migrates_to_v3_and_protects_existing_knowledge(db_path: Pat
 def test_migration_is_idempotent(db_path: Path) -> None:
     with Database(db_path) as db:
         db.initialize_schema(FrozenClock(NOW))
-        assert db.initialize_schema(FrozenClock(NOW)) == 3
+        assert db.initialize_schema(FrozenClock(NOW)) == latest_version()
     with Database(db_path) as db:
-        assert db.initialize_schema(FrozenClock(NOW)) == 3
+        assert db.initialize_schema(FrozenClock(NOW)) == latest_version()
     raw = sqlite3.connect(db_path, isolation_level=None)
     try:
-        assert current_version(raw) == 3
+        assert current_version(raw) == latest_version()
         assert raw.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == len(MIGRATIONS)
     finally:
         raw.close()

@@ -17,7 +17,8 @@ class Lead(CoreModel):
 
     lead_id: EntityId
     contact_id: EntityId
-    company_id: EntityId
+    # None when the company cannot be resolved deterministically (never invented).
+    company_id: EntityId | None = None
     origin: LeadOrigin
     campaign_id: EntityId | None = None
     stage: LeadStage

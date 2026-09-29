@@ -268,3 +268,44 @@ V3_KNOWLEDGE_INDEX_SCHEMA: tuple[str, ...] = (
     *_append_only("knowledge_chunks"),
     *_append_only("knowledge_facts"),
 )
+
+# v4: company is optional for contacts and leads. An inbound sender whose company cannot be
+# resolved deterministically (e.g. a freemail address) must not get an invented company.
+# SQLite cannot relax NOT NULL in place, so both tables are rebuilt (the documented
+# create-copy-drop-rename procedure) with identical columns, constraints and indexes except
+# that company_id is nullable. The runner applies this with foreign-key enforcement off and
+# verifies PRAGMA foreign_key_check before committing.
+V4_OPTIONAL_COMPANY_SCHEMA: tuple[str, ...] = (
+    f"""CREATE TABLE contacts_v4 (
+        contact_id TEXT PRIMARY KEY,
+        company_id TEXT REFERENCES companies (company_id),
+        email TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA}
+    ) STRICT""",
+    """INSERT INTO contacts_v4 (contact_id, company_id, email, created_at, updated_at, version, data)
+        SELECT contact_id, company_id, email, created_at, updated_at, version, data FROM contacts""",
+    "DROP TABLE contacts",
+    "ALTER TABLE contacts_v4 RENAME TO contacts",
+    "CREATE INDEX contacts_company_idx ON contacts (company_id)",
+    f"""CREATE TABLE leads_v4 (
+        lead_id TEXT PRIMARY KEY,
+        contact_id TEXT NOT NULL REFERENCES contacts (contact_id),
+        company_id TEXT REFERENCES companies (company_id),
+        campaign_id TEXT REFERENCES campaigns (campaign_id),
+        stage TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA}
+    ) STRICT""",
+    """INSERT INTO leads_v4 (lead_id, contact_id, company_id, campaign_id, stage, status, created_at,
+        updated_at, version, data)
+        SELECT lead_id, contact_id, company_id, campaign_id, stage, status, created_at, updated_at,
+        version, data FROM leads""",
+    "DROP TABLE leads",
+    "ALTER TABLE leads_v4 RENAME TO leads",
+    "CREATE INDEX leads_contact_idx ON leads (contact_id)",
+    "CREATE INDEX leads_campaign_idx ON leads (campaign_id)",
+)

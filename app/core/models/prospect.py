@@ -51,7 +51,8 @@ class ProspectContact(CoreModel):
     """
 
     contact_id: EntityId
-    company_id: EntityId
+    # None when the company cannot be resolved deterministically (never invented).
+    company_id: EntityId | None = None
     email: EmailAddress
     name: NonEmptyStr | None = None
     role_title: NonEmptyStr | None = None

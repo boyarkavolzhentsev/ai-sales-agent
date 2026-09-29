@@ -18,7 +18,8 @@ _UNIQUE_ERROR_NAMES = frozenset({"SQLITE_CONSTRAINT_UNIQUE", "SQLITE_CONSTRAINT_
 
 def translate_sqlite_error(exc: sqlite3.Error) -> PersistenceError:
     if isinstance(exc, sqlite3.IntegrityError):
-        if exc.sqlite_errorname in _UNIQUE_ERROR_NAMES:
+        # Errors raised by our own code (not SQLite) have no sqlite_errorname.
+        if getattr(exc, "sqlite_errorname", None) in _UNIQUE_ERROR_NAMES:
             return AlreadyExistsError(str(exc))
         return IntegrityError(str(exc))
     return PersistenceError(f"{type(exc).__name__}: {exc}")

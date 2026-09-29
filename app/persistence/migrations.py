@@ -18,6 +18,7 @@ from app.persistence.schema import (
     V2_ADD_OUTBOUND_SENDING_AT,
     V2_QUOTA_SCHEMA,
     V3_KNOWLEDGE_INDEX_SCHEMA,
+    V4_OPTIONAL_COMPANY_SCHEMA,
 )
 from app.persistence.serialization import to_utc_text
 
@@ -33,6 +34,10 @@ class Migration:
     version: int
     name: str
     apply: Callable[[sqlite3.Connection], None]
+    # Table rebuilds need foreign-key enforcement off (it cannot be toggled inside a
+    # transaction). The runner then verifies PRAGMA foreign_key_check before committing
+    # and restores the connection's previous setting afterwards.
+    foreign_keys_off: bool = False
 
 
 def v1_initial_schema(connection: sqlite3.Connection) -> None:
@@ -63,10 +68,16 @@ def v3_knowledge_index(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def v4_optional_company(connection: sqlite3.Connection) -> None:
+    for statement in V4_OPTIONAL_COMPANY_SCHEMA:
+        connection.execute(statement)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial_schema", v1_initial_schema),
     Migration(2, "quota_reservations", v2_quota_reservations),
     Migration(3, "knowledge_index", v3_knowledge_index),
+    Migration(4, "optional_company", v4_optional_company, foreign_keys_off=True),
 )
 
 
@@ -104,14 +115,32 @@ def apply_migrations(
             f"database schema version {current_version(connection)} is newer than supported {supported}"
         )
     for migration in migrations:
-        _run_in_transaction(connection, lambda m=migration: _apply_if_pending(connection, m, clock))
+        if migration.foreign_keys_off and current_version(connection) < migration.version:
+            _run_with_foreign_keys_off(connection, migration, clock)
+        else:
+            _run_in_transaction(connection, lambda m=migration: _apply_if_pending(connection, m, clock))
     return current_version(connection)
+
+
+def _run_with_foreign_keys_off(connection: sqlite3.Connection, migration: Migration, clock: Clock) -> None:
+    enabled = connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        _run_in_transaction(connection, lambda: _apply_if_pending(connection, migration, clock))
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON" if enabled else "PRAGMA foreign_keys = OFF")
 
 
 def _apply_if_pending(connection: sqlite3.Connection, migration: Migration, clock: Clock) -> None:
     if current_version(connection) >= migration.version:
         return
     migration.apply(connection)
+    if migration.foreign_keys_off:
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise sqlite3.IntegrityError(
+                f"migration {migration.version} left foreign key violations: {[tuple(v) for v in violations[:5]]}"
+            )
     connection.execute(
         "INSERT INTO schema_version (version, name, applied_at) VALUES (?, ?, ?)",
         (migration.version, migration.name, to_utc_text(clock.now())),
