@@ -1,2 +1,5 @@
 # Runtime dependencies, added per implementation stage.
 pydantic>=2,<3
+# IANA time zone data for stdlib zoneinfo; required where no system tz database exists
+# (Windows, slim containers). Data only, no code.
+tzdata>=2024.1

@@ -17,6 +17,9 @@ from app.persistence.repositories.sqlite.operator import (
 )
 from app.persistence.repositories.sqlite.outbound import SqliteOutboundMessageRepository
 from app.persistence.repositories.sqlite.provenance import SqliteProvenanceRepository
+from app.persistence.repositories.sqlite.quota_reservations import (
+    SqliteQuotaReservationRepository,
+)
 from app.persistence.repositories.sqlite.threads import SqliteEmailThreadRepository
 
 __all__ = [
@@ -36,4 +39,5 @@ __all__ = [
     "SqliteProspectCompanyRepository",
     "SqliteProspectContactRepository",
     "SqliteProvenanceRepository",
+    "SqliteQuotaReservationRepository",
 ]

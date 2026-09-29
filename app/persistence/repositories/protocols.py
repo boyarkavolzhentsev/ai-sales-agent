@@ -12,7 +12,8 @@ Conventions:
   expose no update or delete methods.
 """
 
-from datetime import datetime
+from collections.abc import Collection
+from datetime import date, datetime
 from typing import Protocol, runtime_checkable
 
 from app.core.enums import CampaignStatus, DNCScope, EscalationStatus, KnowledgeDomain, OutboundStatus
@@ -34,7 +35,7 @@ from app.core.models import (
     ProspectContact,
     ProvenanceRecord,
 )
-from app.persistence.records import IdempotencyRecord
+from app.persistence.records import IdempotencyRecord, LedgerEntry, QuotaReservation
 
 
 @runtime_checkable
@@ -96,6 +97,15 @@ class OutboundMessageRepository(Protocol):
     def update(self, message: OutboundMessage, expected_version: int) -> None: ...
     def list_by_lead(self, lead_id: str) -> list[OutboundMessage]: ...
     def list_by_status(self, status: OutboundStatus) -> list[OutboundMessage]: ...
+    def list_ledger_entries(
+        self,
+        statuses: Collection[OutboundStatus],
+        sending_from: datetime,
+        sending_before: datetime,
+    ) -> list[LedgerEntry]: ...
+    def list_ledger_entries_for_contact(
+        self, contact_id: str, statuses: Collection[OutboundStatus]
+    ) -> list[LedgerEntry]: ...
 
 
 @runtime_checkable
@@ -164,3 +174,13 @@ class IdempotencyRepository(Protocol):
     def reserve(self, key: str, operation: str, created_at: datetime) -> IdempotencyRecord: ...
     def exists(self, key: str) -> bool: ...
     def get(self, key: str) -> IdempotencyRecord | None: ...
+
+
+@runtime_checkable
+class QuotaReservationRepository(Protocol):
+    def add(self, reservation: QuotaReservation) -> None: ...
+    def get(self, reservation_id: str) -> QuotaReservation | None: ...
+    def get_live_for_outbound(self, outbound_id: str) -> QuotaReservation | None: ...
+    def list_active_for_date(self, policy_date: date) -> list[QuotaReservation]: ...
+    def list_active_for_contact(self, contact_id: str) -> list[QuotaReservation]: ...
+    def update(self, reservation: QuotaReservation, expected_version: int) -> None: ...

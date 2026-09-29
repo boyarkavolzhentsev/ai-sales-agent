@@ -13,7 +13,12 @@ from app.persistence.errors import (
     PersistenceError,
     SchemaVersionError,
 )
-from app.persistence.records import IdempotencyRecord
+from app.persistence.records import (
+    IdempotencyRecord,
+    LedgerEntry,
+    QuotaReservation,
+    QuotaReservationState,
+)
 from app.persistence.unit_of_work import UnitOfWork
 
 __all__ = [
@@ -27,8 +32,11 @@ __all__ = [
     "FrozenClock",
     "IdempotencyRecord",
     "IntegrityError",
+    "LedgerEntry",
     "NotFoundError",
     "PersistenceError",
+    "QuotaReservation",
+    "QuotaReservationState",
     "SchemaVersionError",
     "SystemClock",
     "UnitOfWork",

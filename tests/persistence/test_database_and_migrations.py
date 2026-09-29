@@ -55,8 +55,8 @@ def _raw(path: Path) -> sqlite3.Connection:
 def test_empty_database_initializes(db_path: Path, clock: FrozenClock) -> None:
     with Database(db_path) as db:
         assert db.schema_version() == 0
-        assert db.initialize_schema(clock) == 1
-        assert db.schema_version() == latest_version() == 1
+        assert db.initialize_schema(clock) == latest_version()
+        assert db.schema_version() == latest_version() == len(MIGRATIONS)
     raw = _raw(db_path)
     try:
         tables = {row[0] for row in raw.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -69,15 +69,15 @@ def test_second_initialize_is_safe_and_migration_applies_once(db_path: Path, clo
     with Database(db_path) as db:
         db.initialize_schema(clock)
         clock.advance(timedelta(hours=1))
-        assert db.initialize_schema(clock) == 1
+        assert db.initialize_schema(clock) == latest_version()
     with Database(db_path) as db:
-        assert db.initialize_schema(clock) == 1
+        assert db.initialize_schema(clock) == latest_version()
     raw = _raw(db_path)
     try:
         rows = raw.execute("SELECT version, name, applied_at FROM schema_version").fetchall()
     finally:
         raw.close()
-    assert rows == [(1, "initial_schema", to_utc_text(f.T0))]
+    assert rows == [(m.version, m.name, to_utc_text(f.T0)) for m in MIGRATIONS]
 
 
 def test_foreign_keys_are_active(db: Database) -> None:
@@ -101,17 +101,20 @@ def test_newer_database_version_is_rejected(db_path: Path, clock: FrozenClock) -
 # ---- Migration runner ---------------------------------------------------------
 
 
+NEXT = len(MIGRATIONS) + 1
+
+
 def _create(table: str) -> Migration:
-    return Migration(2, f"create_{table}", lambda c: c.execute(f"CREATE TABLE {table} (x INTEGER) STRICT"))
+    return Migration(NEXT, f"create_{table}", lambda c: c.execute(f"CREATE TABLE {table} (x INTEGER) STRICT"))
 
 
 def test_pending_migration_applies_on_existing_database(clock: FrozenClock) -> None:
     connection = sqlite3.connect(MEMORY, isolation_level=None)
     try:
-        assert apply_migrations(connection, clock) == 1
-        assert apply_migrations(connection, clock, (*MIGRATIONS, _create("extra"))) == 2
-        assert apply_migrations(connection, clock, (*MIGRATIONS, _create("extra"))) == 2
-        assert current_version(connection) == 2
+        assert apply_migrations(connection, clock) == latest_version()
+        assert apply_migrations(connection, clock, (*MIGRATIONS, _create("extra"))) == NEXT
+        assert apply_migrations(connection, clock, (*MIGRATIONS, _create("extra"))) == NEXT
+        assert current_version(connection) == NEXT
     finally:
         connection.close()
 
@@ -125,8 +128,8 @@ def test_failing_migration_rolls_back_completely(clock: FrozenClock) -> None:
     try:
         apply_migrations(connection, clock)
         with pytest.raises(sqlite3.OperationalError):
-            apply_migrations(connection, clock, (*MIGRATIONS, Migration(2, "broken", broken)))
-        assert current_version(connection) == 1
+            apply_migrations(connection, clock, (*MIGRATIONS, Migration(NEXT, "broken", broken)))
+        assert current_version(connection) == latest_version()
         leftover = connection.execute("SELECT name FROM sqlite_master WHERE name = 'half_done'").fetchone()
         assert leftover is None
         assert not connection.in_transaction

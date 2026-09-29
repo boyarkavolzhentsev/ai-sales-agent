@@ -91,3 +91,38 @@ def test_transaction_usable_again_after_rollback(db: Database) -> None:
         uow.companies.add(f.company())
     with db.transaction() as uow:
         assert uow.companies.get(f.COMPANY_ID) is not None
+
+
+# ---- Savepoints -----------------------------------------------------------------------
+
+
+def test_savepoint_failure_undoes_only_its_own_writes(db: Database) -> None:
+    with db.transaction() as uow:
+        uow.companies.add(f.company())
+        with pytest.raises(Boom), uow.savepoint():
+            uow.contacts.add(f.contact())
+            raise Boom
+        uow.audit.append(f.audit_event())  # the outer transaction is still usable
+    with db.transaction() as uow:
+        assert uow.companies.get(f.COMPANY_ID) is not None
+        assert uow.contacts.get(f.CONTACT_ID) is None
+        assert uow.audit.get("evt-1") is not None
+
+
+def test_successful_savepoint_commits_with_the_transaction(db: Database) -> None:
+    with db.transaction() as uow:
+        with uow.savepoint():
+            uow.companies.add(f.company())
+        with uow.savepoint(), uow.savepoint():  # nested savepoints
+            uow.contacts.add(f.contact())
+    with db.transaction() as uow:
+        assert uow.contacts.get(f.CONTACT_ID) == f.contact()
+
+
+def test_savepoint_writes_roll_back_with_the_transaction(db: Database) -> None:
+    with pytest.raises(Boom), db.transaction() as uow:
+        with uow.savepoint():
+            uow.companies.add(f.company())
+        raise Boom
+    with db.transaction() as uow:
+        assert uow.companies.get(f.COMPANY_ID) is None

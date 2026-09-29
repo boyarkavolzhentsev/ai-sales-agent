@@ -9,10 +9,11 @@ same database cannot apply a migration twice.
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from app.persistence.clock import Clock
 from app.persistence.errors import SchemaVersionError
-from app.persistence.schema import V1_INITIAL_SCHEMA
+from app.persistence.schema import V1_INITIAL_SCHEMA, V2_ADD_OUTBOUND_SENDING_AT, V2_QUOTA_SCHEMA
 from app.persistence.serialization import to_utc_text
 
 _CREATE_VERSION_TABLE = """CREATE TABLE IF NOT EXISTS schema_version (
@@ -35,7 +36,27 @@ def v1_initial_schema(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
-MIGRATIONS: tuple[Migration, ...] = (Migration(1, "initial_schema", v1_initial_schema),)
+def v2_quota_reservations(connection: sqlite3.Connection) -> None:
+    connection.execute(V2_ADD_OUTBOUND_SENDING_AT)
+    # Backfill the new projected column from each stored model's own JSON. Parsed
+    # directly (not via the current model class) so this migration stays fixed in time.
+    rows = connection.execute(
+        "SELECT outbound_id, json_extract(data, '$.sending_at') FROM outbound_messages "
+        "WHERE json_extract(data, '$.sending_at') IS NOT NULL"
+    ).fetchall()
+    for outbound_id, sending_at in rows:
+        connection.execute(
+            "UPDATE outbound_messages SET sending_at = ? WHERE outbound_id = ?",
+            (to_utc_text(datetime.fromisoformat(sending_at)), outbound_id),
+        )
+    for statement in V2_QUOTA_SCHEMA:
+        connection.execute(statement)
+
+
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(1, "initial_schema", v1_initial_schema),
+    Migration(2, "quota_reservations", v2_quota_reservations),
+)
 
 
 def latest_version(migrations: tuple[Migration, ...] = MIGRATIONS) -> int:

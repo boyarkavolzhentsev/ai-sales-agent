@@ -1,3 +1,5 @@
+from contextlib import AbstractContextManager
+
 from app.persistence.repositories.protocols import (
     AuditRepository,
     CampaignRepository,
@@ -15,6 +17,7 @@ from app.persistence.repositories.protocols import (
     ProspectCompanyRepository,
     ProspectContactRepository,
     ProvenanceRepository,
+    QuotaReservationRepository,
 )
 from app.persistence.repositories.sqlite import (
     SqliteAuditRepository,
@@ -33,6 +36,7 @@ from app.persistence.repositories.sqlite import (
     SqliteProspectCompanyRepository,
     SqliteProspectContactRepository,
     SqliteProvenanceRepository,
+    SqliteQuotaReservationRepository,
 )
 from app.persistence.transaction import Transaction
 
@@ -45,6 +49,7 @@ class UnitOfWork:
     """
 
     def __init__(self, tx: Transaction) -> None:
+        self._tx = tx
         self.companies: ProspectCompanyRepository = SqliteProspectCompanyRepository(tx)
         self.contacts: ProspectContactRepository = SqliteProspectContactRepository(tx)
         self.leads: LeadRepository = SqliteLeadRepository(tx)
@@ -61,3 +66,9 @@ class UnitOfWork:
         self.provenance: ProvenanceRepository = SqliteProvenanceRepository(tx)
         self.knowledge_sources: KnowledgeSourceMetaRepository = SqliteKnowledgeSourceMetaRepository(tx)
         self.idempotency: IdempotencyRepository = SqliteIdempotencyRepository(tx)
+        self.quota_reservations: QuotaReservationRepository = SqliteQuotaReservationRepository(tx)
+
+    def savepoint(self) -> AbstractContextManager[None]:
+        """All-or-nothing sub-unit: writes inside it are undone if it raises, while the
+        surrounding transaction continues."""
+        return self._tx.savepoint()

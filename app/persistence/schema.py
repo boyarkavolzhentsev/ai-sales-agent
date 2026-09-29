@@ -199,3 +199,33 @@ V1_INITIAL_SCHEMA: tuple[str, ...] = (
         created_at TEXT NOT NULL
     ) STRICT""",
 )
+
+# v2: quota reservations and the ledger timestamp used for quota counting.
+# ``outbound_messages.sending_at`` is added and backfilled by the v2 migration function,
+# because existing rows need their timestamp projected from the stored model JSON.
+V2_ADD_OUTBOUND_SENDING_AT = "ALTER TABLE outbound_messages ADD COLUMN sending_at TEXT"
+
+V2_QUOTA_SCHEMA: tuple[str, ...] = (
+    # Daily quota counts filter the ledger by dispatch time; follow-up caps by contact.
+    "CREATE INDEX outbound_messages_sending_at_idx ON outbound_messages (sending_at)",
+    "CREATE INDEX outbound_messages_contact_idx ON outbound_messages (contact_id)",
+    f"""CREATE TABLE quota_reservations (
+        reservation_id TEXT PRIMARY KEY,
+        outbound_id TEXT NOT NULL REFERENCES outbound_messages (outbound_id),
+        kind TEXT NOT NULL,
+        policy_date TEXT NOT NULL,
+        mailbox TEXT NOT NULL,
+        campaign_id TEXT REFERENCES campaigns (campaign_id),
+        contact_id TEXT NOT NULL REFERENCES contacts (contact_id),
+        state TEXT NOT NULL CHECK (state IN ('ACTIVE', 'CONSUMED', 'RELEASED')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA}
+    ) STRICT""",
+    # One live (ACTIVE or CONSUMED) reservation per outbound message; released slots
+    # may be reserved again.
+    """CREATE UNIQUE INDEX quota_reservations_one_live_per_outbound
+        ON quota_reservations (outbound_id) WHERE state IN ('ACTIVE', 'CONSUMED')""",
+    "CREATE INDEX quota_reservations_date_idx ON quota_reservations (policy_date, state)",
+    "CREATE INDEX quota_reservations_contact_idx ON quota_reservations (contact_id, state)",
+)
