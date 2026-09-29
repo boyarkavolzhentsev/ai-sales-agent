@@ -383,3 +383,21 @@ def test_audit_event_rules() -> None:
         AuditEvent(**audit_kwargs(occurred_at=NAIVE))
     with pytest.raises(ValidationError):
         AuditEvent(**audit_kwargs(actor=Actor(type=ActorType.OPERATOR, id=" ")))
+
+
+# ---- Optimistic-concurrency version -------------------------------------------
+
+
+def test_escalation_version() -> None:
+    assert Escalation(**escalation_kwargs()).version == 1
+    assert Escalation(**escalation_kwargs(version=3)).version == 3
+    with pytest.raises(ValidationError):
+        Escalation(**escalation_kwargs(version=0))
+
+
+@pytest.mark.parametrize(
+    "model",
+    [DoNotContactEntry, AuditEvent, ProvenanceRecord, OperatorCommand, OperatorResponse, SendPermit],
+)
+def test_immutable_records_have_no_concurrency_version(model: type) -> None:
+    assert "version" not in model.model_fields

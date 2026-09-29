@@ -47,9 +47,13 @@ class Campaign(CoreModel):
     end_at: AwareDatetime | None = None
     created_by: NonEmptyStr
     activated_by: NonEmptyStr | None = None
+    # Semantic version of the campaign configuration; not a concurrency token.
     config_version: Version = 1
     created_at: AwareDatetime
     updated_at: AwareDatetime
+    # Optimistic-concurrency version; incremented by exactly 1 on every persisted update,
+    # including status-only changes that leave config_version untouched.
+    version: Version = 1
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:

@@ -222,3 +222,26 @@ def test_contact_rejects_naive_collected_at_and_bad_locale() -> None:
     with pytest.raises(ValidationError):
         ProspectContact(**contact_kwargs(locale="English"))
     assert ProspectContact(**contact_kwargs(locale="en-GB")).locale == "en-GB"
+
+
+# ---- Optimistic-concurrency version -------------------------------------------
+
+
+def test_company_contact_thread_have_concurrency_version() -> None:
+    thread_kwargs: dict[str, object] = {
+        "thread_id": "thr-1",
+        "mailbox": "sales@ourco.com",
+        "participant_addresses": ("buyer@prospect.com",),
+        "subject_normalized": "question",
+    }
+    cases = [
+        (ProspectCompany, company_kwargs()),
+        (ProspectContact, contact_kwargs()),
+        (EmailThread, thread_kwargs),
+    ]
+    for model, kwargs in cases:
+        assert model(**kwargs).version == 1
+        assert model(**(kwargs | {"version": 7})).version == 7
+        for bad in (0, -1):
+            with pytest.raises(ValidationError):
+                model(**(kwargs | {"version": bad}))

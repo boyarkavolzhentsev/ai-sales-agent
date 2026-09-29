@@ -278,3 +278,22 @@ def test_plan_status_rules() -> None:
 def test_plan_rejects_naive_datetime() -> None:
     with pytest.raises(ValidationError):
         FollowUpPlan(**plan_kwargs(next_due_at=NAIVE))
+
+
+# ---- Optimistic-concurrency version -------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_campaign_and_outbound_version_must_be_positive(bad: int) -> None:
+    with pytest.raises(ValidationError):
+        Campaign(**campaign_kwargs(version=bad))
+    with pytest.raises(ValidationError):
+        OutboundMessage(**outbound_kwargs(version=bad))
+
+
+def test_campaign_version_is_independent_of_config_version() -> None:
+    campaign = Campaign(**campaign_kwargs())
+    assert (campaign.version, campaign.config_version) == (1, 1)
+    bumped = Campaign(**campaign_kwargs(version=5))
+    assert (bumped.version, bumped.config_version) == (5, 1)
+    assert OutboundMessage(**outbound_kwargs()).version == 1

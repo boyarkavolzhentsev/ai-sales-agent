@@ -5,7 +5,7 @@ from pydantic import AwareDatetime, NonNegativeInt, model_validator
 
 from app.core.enums import OutboundDecision, OutboundKind, OutboundStatus
 from app.core.models.base import CoreModel
-from app.core.models.types import EntityId, NonEmptyStr, Sha256Hex, UniqueNonEmptyStrs
+from app.core.models.types import EntityId, NonEmptyStr, Sha256Hex, UniqueNonEmptyStrs, Version
 from app.core.validation import ensure_not_before
 
 _SEND_ONLY: frozenset[OutboundDecision | None] = frozenset({OutboundDecision.SEND})
@@ -69,6 +69,8 @@ class OutboundMessage(CoreModel):
     approved_at: AwareDatetime | None = None
     sending_at: AwareDatetime | None = None
     sent_at: AwareDatetime | None = None
+    # Optimistic-concurrency version; incremented by exactly 1 on every persisted update.
+    version: Version = 1
 
     @model_validator(mode="after")
     def _check_kind(self) -> Self:

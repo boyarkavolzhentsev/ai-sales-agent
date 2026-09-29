@@ -11,6 +11,7 @@ from app.core.models.types import (
     Sha256Hex,
     UniqueEmailAddresses,
     UniqueEntityIds,
+    Version,
 )
 
 
@@ -60,3 +61,5 @@ class EmailThread(CoreModel):
     message_ids: UniqueEntityIds = ()
     last_inbound_at: AwareDatetime | None = None
     last_outbound_at: AwareDatetime | None = None
+    # Optimistic-concurrency version; incremented by exactly 1 on every persisted update.
+    version: Version = 1

@@ -10,7 +10,7 @@ from app.core.enums import (
 )
 from app.core.models.base import CoreModel
 from app.core.models.refs import EntityRef
-from app.core.models.types import EntityId, NonEmptyStr
+from app.core.models.types import EntityId, NonEmptyStr, Version
 from app.core.validation import ensure_not_before, unique_items
 
 
@@ -33,6 +33,8 @@ class Escalation(CoreModel):
     resolved_at: AwareDatetime | None = None
     resolved_by: NonEmptyStr | None = None
     telegram_ref: NonEmptyStr | None = None
+    # Optimistic-concurrency version; incremented by exactly 1 on every persisted update.
+    version: Version = 1
 
     @model_validator(mode="after")
     def _check_resolution(self) -> Self:

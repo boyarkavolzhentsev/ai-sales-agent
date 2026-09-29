@@ -11,6 +11,7 @@ from app.core.models.types import (
     EntityId,
     LocaleTag,
     NonEmptyStr,
+    Version,
 )
 from app.core.validation import ensure_not_before
 
@@ -31,6 +32,8 @@ class ProspectCompany(CoreModel):
     source_ref: NonEmptyStr | None = None
     created_at: AwareDatetime
     updated_at: AwareDatetime
+    # Optimistic-concurrency version; incremented by exactly 1 on every persisted update.
+    version: Version = 1
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:
@@ -63,6 +66,8 @@ class ProspectContact(CoreModel):
     locale: LocaleTag | None = None
     created_at: AwareDatetime
     updated_at: AwareDatetime
+    # Optimistic-concurrency version; incremented by exactly 1 on every persisted update.
+    version: Version = 1
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:
