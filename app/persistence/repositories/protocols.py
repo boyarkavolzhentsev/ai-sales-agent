@@ -16,7 +16,7 @@ from collections.abc import Collection
 from datetime import date, datetime
 from typing import Protocol, runtime_checkable
 
-from app.core.enums import CampaignStatus, DNCScope, EscalationStatus, KnowledgeDomain, OutboundStatus
+from app.core.enums import CampaignStatus, ConversationStatus, DNCScope, EscalationStatus, KnowledgeDomain, OutboundStatus
 from app.core.models import (
     AuditEvent,
     Campaign,
@@ -214,6 +214,7 @@ class ConversationRepository(Protocol):
     def get_by_thread(self, thread_id: str) -> Conversation | None: ...
     def list_by_contact(self, contact_id: str) -> list[Conversation]: ...
     def list_by_lead(self, lead_id: str) -> list[Conversation]: ...
+    def list_by_status(self, status: ConversationStatus, limit: int) -> list[Conversation]: ...
     def update(self, conversation: Conversation, expected_version: int) -> None: ...
 
 

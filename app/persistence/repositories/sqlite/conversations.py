@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from app.core.enums import ConversationStatus
 from app.core.models import Conversation, FollowUpJob
 from app.persistence.repositories.sqlite._rows import (
     ensure_updated,
@@ -57,6 +58,12 @@ class SqliteConversationRepository:
 
     def list_by_lead(self, lead_id: str) -> list[Conversation]:
         rows = self._tx.fetch_all("SELECT data FROM conversations WHERE lead_id = ? ORDER BY conversation_id", (lead_id,))
+        return load_all(Conversation, rows)
+
+    def list_by_status(self, status: ConversationStatus, limit: int) -> list[Conversation]:
+        rows = self._tx.fetch_all(
+            "SELECT data FROM conversations WHERE status = ? ORDER BY updated_at, conversation_id LIMIT ?", (status.value, limit)
+        )
         return load_all(Conversation, rows)
 
     def update(self, conversation: Conversation, expected_version: int) -> None:

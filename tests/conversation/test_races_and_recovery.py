@@ -12,7 +12,7 @@ from app.core.enums import ConversationStatus, FollowUpJobStatus, OutboundStatus
 from app.conversation import ExecutionOutcome, FollowUpBlock, ScheduleOutcome, ScheduleResult
 from app.conversation import executor as executor_module
 from app.dispatch import DispatchCode, DispatchOutcome, FakeBehavior, FakeEmailTransport, FakeStep
-from app.operator import PauseConversation
+from app.operator import PauseConversation, StaleCommandError
 from app.persistence import Database, DispatchAttemptState, FrozenClock, UnitOfWork
 from tests.conversation.builders import (
     FIRST_DUE,
@@ -321,9 +321,16 @@ def test_racing_execution_and_operator_pause_never_leave_a_live_follow_up(db_pat
 
     def pause(db: Database) -> object:
         service = operator(db, FrozenClock(LATER))
-        current = service.get_conversation(AS_ALICE, replied.conversation_id).version
-        return service.pause_conversation(AS_ALICE, PauseConversation(
-            command_id="cmd-pause", correlation_id="c", conversation_id=replied.conversation_id, expected_conversation_version=current))
+        for attempt in range(2):  # the executor may commit between the read and the pause: re-read once, as an operator would
+            current = service.get_conversation(AS_ALICE, replied.conversation_id).version
+            try:
+                return service.pause_conversation(AS_ALICE, PauseConversation(
+                    command_id=f"cmd-pause-{attempt}", correlation_id="c", conversation_id=replied.conversation_id,
+                    expected_conversation_version=current))
+            except StaleCommandError:
+                if attempt:
+                    raise
+        raise AssertionError("unreachable")
 
     results = run_concurrently(db_path, lambda db: executor(db, FrozenClock(LATER)).execute(claim, correlation_id="c"), pause)
     assert not any(isinstance(r, Exception) for r in results), results
