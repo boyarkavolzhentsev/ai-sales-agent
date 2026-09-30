@@ -83,6 +83,15 @@ from app.operator.errors import (
 )
 from app.operator.models import (
     ActivateCampaign,
+    ApproveQualification,
+    CreateOpportunity,
+    DisqualifyLead,
+    MarkLeadLost,
+    MarkLeadWon,
+    RecordQualificationFact,
+    ReopenLead,
+    ResolveQualificationConflict,
+    StartNegotiation,
     ApproveDraft,
     CampaignCommand,
     CancelCampaign,
@@ -127,6 +136,12 @@ from app.operator.review import (
     suppression_scopes,
 )
 from app.persistence import Clock, Database, DuplicateIdempotencyKeyError, UnitOfWork
+from app.pipeline import lifecycle as pipeline_lifecycle
+from app.pipeline import qualification as pipeline_qualification
+from app.pipeline.config import PipelineConfig
+from app.pipeline.errors import PipelineError, PipelineNotFoundError
+from app.pipeline.guards import load_lead, require_not_suppressed, require_open
+from app.pipeline.views import LeadPipelineView, PipelineMetrics, PipelineQueue, lead_view, metrics, queue
 from app.persistence.serialization import dumps_json
 
 OPEN_ESCALATION_STATUSES = (EscalationStatus.OPEN, EscalationStatus.ACKNOWLEDGED)
@@ -159,12 +174,14 @@ def command_event_id(command_id: str) -> str:
 
 class OperatorService:
     def __init__(
-        self, db: Database, clock: Clock, config: OperatorConfig, authenticator: OperatorAuthenticator
+        self, db: Database, clock: Clock, config: OperatorConfig, authenticator: OperatorAuthenticator,
+        pipeline: PipelineConfig | None = None,
     ) -> None:
         self._db = db
         self._clock = clock
         self._config = config
         self._authenticator = authenticator
+        self._pipeline = pipeline or PipelineConfig()
 
     # ---- Reads ----------------------------------------------------------------------------
 
@@ -362,6 +379,53 @@ class OperatorService:
                 raise OperatorNotFoundError(f"campaign member {member_id} not found")
             return member_view(uow, member)
 
+    # ---- Sales pipeline (Stage 12) ------------------------------------------------------------
+
+    def get_lead_pipeline(self, credential: object, lead_id: str) -> LeadPipelineView:
+        authorize(self._authenticator, self._config, credential)
+        with self._db.transaction() as uow:
+            found = lead_view(uow, lead_id, self._pipeline.profile, self._clock.now())
+        if found is None:
+            raise OperatorNotFoundError(f"lead {lead_id} not found")
+        return found
+
+    def list_pipeline(self, credential: object, which: PipelineQueue) -> tuple[LeadPipelineView, ...]:
+        authorize(self._authenticator, self._config, credential)
+        with self._db.transaction() as uow:
+            return queue(uow, which, self._pipeline.profile, self._clock.now(), self._config.max_list_items)
+
+    def get_pipeline_metrics(self, credential: object) -> PipelineMetrics:
+        authorize(self._authenticator, self._config, credential)
+        with self._db.transaction() as uow:
+            return metrics(uow, self._pipeline.profile, self._clock.now(), self._pipeline.queue_limit)
+
+    def record_qualification_fact(self, credential: object, command: RecordQualificationFact) -> CommandResult:
+        return self._execute(credential, command, self._record_fact)
+
+    def resolve_qualification_conflict(self, credential: object, command: ResolveQualificationConflict) -> CommandResult:
+        return self._execute(credential, command, self._resolve_conflict)
+
+    def approve_qualification(self, credential: object, command: ApproveQualification) -> CommandResult:
+        return self._execute(credential, command, self._approve_qualification)
+
+    def disqualify_lead(self, credential: object, command: DisqualifyLead) -> CommandResult:
+        return self._execute(credential, command, self._disqualify)
+
+    def create_opportunity(self, credential: object, command: CreateOpportunity) -> CommandResult:
+        return self._execute(credential, command, self._create_opportunity)
+
+    def start_negotiation(self, credential: object, command: StartNegotiation) -> CommandResult:
+        return self._execute(credential, command, self._start_negotiation)
+
+    def mark_lead_won(self, credential: object, command: MarkLeadWon) -> CommandResult:
+        return self._execute(credential, command, self._mark_won)
+
+    def mark_lead_lost(self, credential: object, command: MarkLeadLost) -> CommandResult:
+        return self._execute(credential, command, self._mark_lost)
+
+    def reopen_lead(self, credential: object, command: ReopenLead) -> CommandResult:
+        return self._execute(credential, command, self._reopen)
+
     def _execute[C: OperatorCommand](
         self,
         credential: object,
@@ -384,7 +448,13 @@ class OperatorService:
                     ) from None
                 return CommandResult(outcome=recorded, replayed=True)
 
-            applied = handler(uow, command, now, operator_id)
+            try:
+                applied = handler(uow, command, now, operator_id)
+            except PipelineError as exc:
+                codes = tuple(BlockCode(code.value) for code in exc.codes)
+                raise (StaleCommandError(codes) if exc.stale else CommandRejectedError(codes)) from None
+            except PipelineNotFoundError as exc:
+                raise OperatorNotFoundError(str(exc)) from None
             outcome = CommandOutcome(
                 command_id=command.command_id,
                 kind=command.kind,
@@ -695,6 +765,116 @@ class OperatorService:
         return applied
 
     # ---- Helpers --------------------------------------------------------------------------
+
+    # ---- Sales pipeline handlers (Stage 12) --------------------------------------------------
+
+    @staticmethod
+    def _lead_applied(before: Lead, after: Lead, disposition: str, *, note: str | None = None,
+                      reason_codes: tuple[str, ...] = ()) -> _Applied:
+        applied = _Applied(disposition=disposition, note=note, reason_codes=reason_codes)
+        state: JsonValue = {"stage": before.stage.value, "status": before.status.value,
+                            "close_reason": before.close_reason.value if before.close_reason else None}
+        applied.changed(ref(RefKind.LEAD, before.lead_id), before.version, "lead", state, resulting=after.version)
+        return applied
+
+    def _record_fact(self, uow: UnitOfWork, command: RecordQualificationFact, now: datetime, operator_id: str) -> _Applied:
+        lead = load_lead(uow, command.lead_id)
+        require_open(lead)
+        updated = pipeline_qualification.record_operator_fact(
+            uow, self._pipeline.profile, lead, field_key=command.field, value=command.value,
+            expected_version=command.expected_qualification_version, operator_id=operator_id,
+            command_id=command.command_id, correlation_id=command.correlation_id, now=now)
+        applied = _Applied(disposition=updated.status.value, reason_codes=(f"FIELD:{command.field}",))
+        qualification_ref = ref(RefKind.LEAD_QUALIFICATION, lead.lead_id)
+        if command.expected_qualification_version is None:  # the first fact created the qualification
+            applied.subjects.append(qualification_ref)
+        else:
+            applied.changed(qualification_ref, command.expected_qualification_version, "qualification",
+                            {"version": command.expected_qualification_version}, resulting=updated.version)
+        return applied
+
+    def _resolve_conflict(self, uow: UnitOfWork, command: ResolveQualificationConflict, now: datetime, operator_id: str) -> _Applied:
+        lead = load_lead(uow, command.lead_id)
+        require_open(lead)
+        updated = pipeline_qualification.resolve_conflict(
+            uow, self._pipeline.profile, lead, conflict_id=command.conflict_id, resolution=command.resolution,
+            expected_version=command.expected_qualification_version, operator_id=operator_id,
+            correlation_id=command.correlation_id, now=now)
+        applied = _Applied(disposition=command.resolution.value, reason_codes=(f"CONFLICT:{command.conflict_id}",))
+        applied.changed(ref(RefKind.LEAD_QUALIFICATION, lead.lead_id), command.expected_qualification_version,
+                        "qualification", {"version": command.expected_qualification_version}, resulting=updated.version)
+        return applied
+
+    def _approve_qualification(self, uow: UnitOfWork, command: ApproveQualification, now: datetime, operator_id: str) -> _Applied:
+        lead = load_lead(uow, command.lead_id, command.expected_lead_version)
+        require_open(lead)
+        require_not_suppressed(uow, lead, now)
+        after, qualification = pipeline_qualification.approve(
+            uow, lead, expected_version=command.expected_qualification_version, operator_id=operator_id,
+            command_id=command.command_id, correlation_id=command.correlation_id, now=now)
+        applied = self._lead_applied(lead, after, qualification.status.value, note=command.note)
+        applied.subjects.append(ref(RefKind.LEAD_QUALIFICATION, lead.lead_id))
+        return applied
+
+    def _disqualify(self, uow: UnitOfWork, command: DisqualifyLead, now: datetime, operator_id: str) -> _Applied:
+        lead = load_lead(uow, command.lead_id, command.expected_lead_version)
+        after, stop = pipeline_lifecycle.disqualify(
+            uow, self._pipeline.profile, lead, reason=command.reason, operator_id=operator_id,
+            command_id=command.command_id, correlation_id=command.correlation_id, now=now)
+        return self._closed_applied(lead, after, stop, command.reason.value, command.note)
+
+    def _create_opportunity(self, uow: UnitOfWork, command: CreateOpportunity, now: datetime, operator_id: str) -> _Applied:
+        lead = load_lead(uow, command.lead_id, command.expected_lead_version)
+        after, opportunity = pipeline_lifecycle.create_opportunity(
+            uow, lead, amount=command.amount, currency=command.currency, scope=command.scope,
+            expected_decision_date=command.expected_decision_date, next_step=command.next_step,
+            operator_id=operator_id, command_id=command.command_id, correlation_id=command.correlation_id, now=now)
+        applied = self._lead_applied(lead, after, opportunity.status.value)
+        applied.subjects.append(ref(RefKind.OPPORTUNITY, opportunity.opportunity_id))
+        return applied
+
+    def _start_negotiation(self, uow: UnitOfWork, command: StartNegotiation, now: datetime, operator_id: str) -> _Applied:
+        lead = load_lead(uow, command.lead_id, command.expected_lead_version)
+        after, opportunity = pipeline_lifecycle.start_negotiation(
+            uow, lead, opportunity_id=command.opportunity_id,
+            expected_opportunity_version=command.expected_opportunity_version, operator_id=operator_id,
+            command_id=command.command_id, correlation_id=command.correlation_id, now=now)
+        applied = self._lead_applied(lead, after, opportunity.status.value)
+        applied.changed(ref(RefKind.OPPORTUNITY, opportunity.opportunity_id), command.expected_opportunity_version,
+                        "opportunity", {"status": "OPEN"}, resulting=opportunity.version)
+        return applied
+
+    def _mark_won(self, uow: UnitOfWork, command: MarkLeadWon, now: datetime, operator_id: str) -> _Applied:
+        lead = load_lead(uow, command.lead_id, command.expected_lead_version)
+        after, stop = pipeline_lifecycle.mark_won(
+            uow, lead, opportunity_id=command.opportunity_id,
+            expected_opportunity_version=command.expected_opportunity_version, operator_id=operator_id,
+            command_id=command.command_id, correlation_id=command.correlation_id, now=now)
+        applied = self._closed_applied(lead, after, stop, "WON", command.note)
+        applied.subjects.append(ref(RefKind.OPPORTUNITY, command.opportunity_id))
+        return applied
+
+    def _mark_lost(self, uow: UnitOfWork, command: MarkLeadLost, now: datetime, operator_id: str) -> _Applied:
+        lead = load_lead(uow, command.lead_id, command.expected_lead_version)
+        after, stop = pipeline_lifecycle.mark_lost(
+            uow, lead, reason=command.reason, operator_id=operator_id, command_id=command.command_id,
+            correlation_id=command.correlation_id, now=now)
+        return self._closed_applied(lead, after, stop, command.reason.value, command.note)
+
+    def _reopen(self, uow: UnitOfWork, command: ReopenLead, now: datetime, operator_id: str) -> _Applied:
+        lead = load_lead(uow, command.lead_id, command.expected_lead_version)
+        after = pipeline_lifecycle.reopen(
+            uow, self._pipeline, lead, target=command.target_stage, operator_id=operator_id,
+            command_id=command.command_id, correlation_id=command.correlation_id, now=now)
+        return self._lead_applied(lead, after, after.stage.value, note=command.note,
+                                  reason_codes=(f"REOPENED_FROM:{lead.close_reason.value if lead.close_reason else ''}",))
+
+    def _closed_applied(self, before: Lead, after: Lead, stop: "pipeline_lifecycle.AutomationStop", reason: str,
+                        note: str | None) -> _Applied:
+        applied = self._lead_applied(before, after, after.close_reason.value if after.close_reason else "CLOSED",
+                                     note=note, reason_codes=(reason, *(f"CANCELLED:{i}" for i in stop.cancelled_outbound_ids)))
+        applied.subjects += [ref(RefKind.OUTBOUND_MESSAGE, i) for i in stop.cancelled_outbound_ids]
+        return applied
 
     @staticmethod
     def _reply(uow: UnitOfWork, outbound_id: str) -> OutboundMessage:

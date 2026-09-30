@@ -7,13 +7,23 @@ class LeadOrigin(StrEnum):
 
 
 class LeadStage(StrEnum):
-    """Pipeline position. Contactability (DNC) and outcomes are deliberately not stages."""
+    """Commercial pipeline position. Contactability (DNC) is deliberately not a stage; the
+    outcome of a CLOSED lead is its CloseReason (WON, LOST, ...).
+
+    Automatic band (set from provider or customer facts): NEW, CONTACTED, ENGAGED,
+    INTERESTED, MEETING_REQUESTED, QUALIFYING. Operator band (human commercial judgement,
+    Stage 12): QUALIFIED, OPPORTUNITY, NEGOTIATION. See ``app.pipeline.policy``.
+    """
 
     NEW = "NEW"
     CONTACTED = "CONTACTED"
     ENGAGED = "ENGAGED"
     INTERESTED = "INTERESTED"
     MEETING_REQUESTED = "MEETING_REQUESTED"
+    QUALIFYING = "QUALIFYING"  # qualification facts are being collected
+    QUALIFIED = "QUALIFIED"  # an operator approved the qualification
+    OPPORTUNITY = "OPPORTUNITY"  # an operator opened an opportunity
+    NEGOTIATION = "NEGOTIATION"  # an operator started commercial negotiation
     CLOSED = "CLOSED"
 
 
@@ -33,6 +43,7 @@ class CloseReason(StrEnum):
     DUPLICATE = "DUPLICATE"
     WON = "WON"
     LOST = "LOST"
+    DISQUALIFIED = "DISQUALIFIED"  # an operator decided the lead does not qualify
 
 
 class LeadIntent(StrEnum):

@@ -16,9 +16,11 @@ from app.persistence.repositories.protocols import (
     IdempotencyRepository,
     KnowledgeIndexRepository,
     KnowledgeSourceMetaRepository,
+    LeadQualificationRepository,
     LeadRepository,
     OperatorCommandRepository,
     OperatorResponseRepository,
+    OpportunityRepository,
     OutboundMessageRepository,
     ProspectCompanyRepository,
     ProspectContactRepository,
@@ -41,9 +43,11 @@ from app.persistence.repositories.sqlite import (
     SqliteIdempotencyRepository,
     SqliteKnowledgeIndexRepository,
     SqliteKnowledgeSourceMetaRepository,
+    SqliteLeadQualificationRepository,
     SqliteLeadRepository,
     SqliteOperatorCommandRepository,
     SqliteOperatorResponseRepository,
+    SqliteOpportunityRepository,
     SqliteOutboundMessageRepository,
     SqliteProspectCompanyRepository,
     SqliteProspectContactRepository,
@@ -85,6 +89,8 @@ class UnitOfWork:
         self.follow_up_jobs: FollowUpJobRepository = SqliteFollowUpJobRepository(tx)
         self.campaign_members: CampaignMemberRepository = SqliteCampaignMemberRepository(tx)
         self.campaign_jobs: CampaignJobRepository = SqliteCampaignJobRepository(tx)
+        self.qualifications: LeadQualificationRepository = SqliteLeadQualificationRepository(tx)
+        self.opportunities: OpportunityRepository = SqliteOpportunityRepository(tx)
 
     def savepoint(self) -> AbstractContextManager[None]:
         """All-or-nothing sub-unit: writes inside it are undone if it raises, while the

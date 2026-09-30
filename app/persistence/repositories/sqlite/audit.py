@@ -46,6 +46,13 @@ class SqliteAuditRepository:
         )
         return load_all(AuditEvent, rows)
 
+    def list_by_event_type(self, event_type: str, limit: int) -> list[AuditEvent]:
+        rows = self._tx.fetch_all(
+            "SELECT data FROM audit_events WHERE event_type = ? ORDER BY occurred_at, event_id LIMIT ?",
+            (event_type, limit),
+        )
+        return load_all(AuditEvent, rows)
+
     def list_by_correlation_id(self, correlation_id: str) -> list[AuditEvent]:
         rows = self._tx.fetch_all(
             "SELECT data FROM audit_events WHERE correlation_id = ? ORDER BY occurred_at, event_id",

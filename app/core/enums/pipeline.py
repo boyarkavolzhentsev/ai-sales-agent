@@ -1,0 +1,110 @@
+"""Sales pipeline (Stage 12) enums: qualification, opportunities, transitions, next actions."""
+
+from enum import StrEnum
+
+
+class QualificationStatus(StrEnum):
+    """A lead without a qualification record is NOT_STARTED (nothing is backfilled)."""
+
+    NOT_STARTED = "NOT_STARTED"
+    IN_PROGRESS = "IN_PROGRESS"  # facts are being collected
+    READY_FOR_REVIEW = "READY_FOR_REVIEW"  # every required field known, no open conflict
+    QUALIFIED = "QUALIFIED"  # an operator approved it
+    DISQUALIFIED = "DISQUALIFIED"  # an operator disqualified the lead (with a reason)
+
+
+class FactSource(StrEnum):
+    EXTRACTION = "EXTRACTION"  # proposed by the extraction contract from a customer message
+    OPERATOR = "OPERATOR"  # recorded or chosen by an operator command
+
+
+class ConflictStatus(StrEnum):
+    OPEN = "OPEN"
+    RESOLVED = "RESOLVED"
+
+
+class ConflictResolution(StrEnum):
+    KEEP_CURRENT = "KEEP_CURRENT"
+    ACCEPT_PROPOSED = "ACCEPT_PROPOSED"
+
+
+class DisqualificationReason(StrEnum):
+    NO_PRODUCT_FIT = "NO_PRODUCT_FIT"
+    OUTSIDE_SERVICE_AREA = "OUTSIDE_SERVICE_AREA"
+    BUDGET_MISMATCH = "BUDGET_MISMATCH"
+    TIMING_NOT_SUPPORTED = "TIMING_NOT_SUPPORTED"
+    DUPLICATE_OR_INVALID_LEAD = "DUPLICATE_OR_INVALID_LEAD"
+    CUSTOMER_DECLINED = "CUSTOMER_DECLINED"
+    OTHER_OPERATOR_DECISION = "OTHER_OPERATOR_DECISION"
+
+
+class LostReason(StrEnum):
+    CUSTOMER_DECLINED = "CUSTOMER_DECLINED"
+    CHOSE_COMPETITOR = "CHOSE_COMPETITOR"
+    NO_BUDGET = "NO_BUDGET"
+    NO_DECISION = "NO_DECISION"
+    NO_RESPONSE = "NO_RESPONSE"
+    TIMING = "TIMING"
+    OTHER_OPERATOR_DECISION = "OTHER_OPERATOR_DECISION"
+
+
+class OpportunityStatus(StrEnum):
+    OPEN = "OPEN"
+    NEGOTIATING = "NEGOTIATING"
+    WON = "WON"
+    LOST = "LOST"
+    CANCELLED = "CANCELLED"  # the lead was closed for another reason (e.g. disqualified)
+
+
+class PipelineTrigger(StrEnum):
+    """The business event behind a pipeline transition (recorded in the audit)."""
+
+    FIRST_TOUCH_ACCEPTED = "FIRST_TOUCH_ACCEPTED"
+    CUSTOMER_REPLIED = "CUSTOMER_REPLIED"
+    QUALIFICATION_STARTED = "QUALIFICATION_STARTED"
+    QUALIFICATION_APPROVED = "QUALIFICATION_APPROVED"
+    DISQUALIFIED = "DISQUALIFIED"
+    OPPORTUNITY_CREATED = "OPPORTUNITY_CREATED"
+    NEGOTIATION_STARTED = "NEGOTIATION_STARTED"
+    OPERATOR_MARKED_WON = "OPERATOR_MARKED_WON"
+    OPERATOR_MARKED_LOST = "OPERATOR_MARKED_LOST"
+    OPERATOR_REOPENED = "OPERATOR_REOPENED"
+
+
+class NextActionOwner(StrEnum):
+    CUSTOMER = "CUSTOMER"
+    AGENT = "AGENT"  # the application's own automation
+    OPERATOR = "OPERATOR"
+    NONE = "NONE"
+
+
+class NextActionType(StrEnum):
+    WAIT_FOR_REPLY = "WAIT_FOR_REPLY"
+    CAMPAIGN_OUTREACH = "CAMPAIGN_OUTREACH"
+    FOLLOW_UP = "FOLLOW_UP"
+    RESPOND = "RESPOND"
+    QUALIFY = "QUALIFY"
+    AWAIT_DISPATCH_RESOLUTION = "AWAIT_DISPATCH_RESOLUTION"
+    OPERATOR_REVIEW = "OPERATOR_REVIEW"
+    RESOLVE_QUALIFICATION_CONFLICT = "RESOLVE_QUALIFICATION_CONFLICT"
+    REVIEW_QUALIFICATION = "REVIEW_QUALIFICATION"
+    DECIDE_OPPORTUNITY = "DECIDE_OPPORTUNITY"
+    PREPARE_PROPOSAL = "PREPARE_PROPOSAL"
+    OPERATOR_DECISION = "OPERATOR_DECISION"
+    CLOSED = "CLOSED"
+    NONE = "NONE"
+
+
+class BlockerCode(StrEnum):
+    DNC = "DNC"
+    CLOSED_LEAD = "CLOSED_LEAD"
+    UNRESOLVED_DISPATCH = "UNRESOLVED_DISPATCH"
+    OPERATOR_REVIEW = "OPERATOR_REVIEW"
+    QUALIFICATION_CONFLICT = "QUALIFICATION_CONFLICT"
+    MISSING_QUALIFICATION = "MISSING_QUALIFICATION"
+    CUSTOMER_DECLINED = "CUSTOMER_DECLINED"
+    ACTIVE_CUSTOMER_WAIT = "ACTIVE_CUSTOMER_WAIT"
+    CAMPAIGN_OWNS_PRE_REPLY = "CAMPAIGN_OWNS_PRE_REPLY"
+    CONVERSATION_PAUSED = "CONVERSATION_PAUSED"
+    NO_ACTIVE_CONVERSATION = "NO_ACTIVE_CONVERSATION"
+    LEAD_ON_HOLD = "LEAD_ON_HOLD"

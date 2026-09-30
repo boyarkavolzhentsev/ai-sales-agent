@@ -16,6 +16,16 @@ from app.operator.errors import (
     StaleCommandError,
 )
 from app.operator.models import (
+    ApproveQualification,
+    CreateOpportunity,
+    DisqualifyLead,
+    MarkLeadLost,
+    MarkLeadWon,
+    PipelineCommand,
+    RecordQualificationFact,
+    ReopenLead,
+    ResolveQualificationConflict,
+    StartNegotiation,
     ActivateCampaign,
     ApproveDraft,
     CancelCampaign,
@@ -50,6 +60,16 @@ from app.operator.models import (
 from app.operator.service import OperatorService
 
 __all__ = [
+    "ApproveQualification",
+    "CreateOpportunity",
+    "DisqualifyLead",
+    "MarkLeadLost",
+    "MarkLeadWon",
+    "PipelineCommand",
+    "RecordQualificationFact",
+    "ReopenLead",
+    "ResolveQualificationConflict",
+    "StartNegotiation",
     "ActivateCampaign",
     "ApproveDraft",
     "CancelCampaign",

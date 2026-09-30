@@ -1,3 +1,6 @@
+from collections.abc import Collection
+
+from app.core.enums import LeadStage
 from app.core.models import Lead
 from app.persistence.repositories.sqlite._rows import (
     ensure_updated,
@@ -30,6 +33,21 @@ class SqliteLeadRepository:
                 model_to_json(lead),
             ),
         )
+
+    def list_by_stages(self, stages: Collection[LeadStage], limit: int) -> list[Lead]:
+        """Most recently updated first."""
+        if not stages:
+            return []
+        marks = ", ".join("?" for _ in stages)
+        rows = self._tx.fetch_all(
+            f"SELECT data FROM leads WHERE stage IN ({marks}) ORDER BY updated_at DESC, lead_id LIMIT ?",
+            (*(stage.value for stage in stages), limit),
+        )
+        return load_all(Lead, rows)
+
+    def count_by_stage(self) -> dict[LeadStage, int]:
+        rows = self._tx.fetch_all("SELECT stage, COUNT(*) AS n FROM leads GROUP BY stage")
+        return {LeadStage(row["stage"]): int(row["n"]) for row in rows}
 
     def get(self, lead_id: str) -> Lead | None:
         row = self._tx.fetch_one("SELECT data FROM leads WHERE lead_id = ?", (lead_id,))

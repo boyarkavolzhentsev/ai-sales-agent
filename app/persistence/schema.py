@@ -411,3 +411,29 @@ V7_CAMPAIGN_EXECUTION_SCHEMA: tuple[str, ...] = (
     "CREATE INDEX campaign_jobs_lease_idx ON campaign_jobs (status, lease_expires_at)",
     "CREATE INDEX campaign_jobs_campaign_idx ON campaign_jobs (campaign_id, status)",
 )
+
+# v8: sales pipeline. At most one qualification per lead (absent = NOT_STARTED; nothing is
+# backfilled for existing leads). Opportunities: SQL allows at most one active (OPEN or
+# NEGOTIATING) opportunity per lead; closed ones stay as history.
+V8_SALES_PIPELINE_SCHEMA: tuple[str, ...] = (
+    f"""CREATE TABLE lead_qualifications (
+        lead_id TEXT PRIMARY KEY REFERENCES leads (lead_id),
+        status TEXT NOT NULL CHECK (status IN ('IN_PROGRESS', 'READY_FOR_REVIEW', 'QUALIFIED', 'DISQUALIFIED')),
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA}
+    ) STRICT""",
+    "CREATE INDEX lead_qualifications_status_idx ON lead_qualifications (status, updated_at)",
+    f"""CREATE TABLE opportunities (
+        opportunity_id TEXT PRIMARY KEY,
+        lead_id TEXT NOT NULL REFERENCES leads (lead_id),
+        status TEXT NOT NULL CHECK (status IN ('OPEN', 'NEGOTIATING', 'WON', 'LOST', 'CANCELLED')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA}
+    ) STRICT""",
+    """CREATE UNIQUE INDEX opportunities_one_active_per_lead
+        ON opportunities (lead_id) WHERE status IN ('OPEN', 'NEGOTIATING')""",
+    "CREATE INDEX opportunities_status_idx ON opportunities (status, updated_at)",
+    "CREATE INDEX leads_stage_idx ON leads (stage, updated_at)",
+    "CREATE INDEX audit_events_type_idx ON audit_events (event_type, occurred_at)",
+)

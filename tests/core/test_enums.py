@@ -28,6 +28,10 @@ def test_lead_stage_values() -> None:
         "ENGAGED",
         "INTERESTED",
         "MEETING_REQUESTED",
+        "QUALIFYING",
+        "QUALIFIED",
+        "OPPORTUNITY",
+        "NEGOTIATION",
         "CLOSED",
     ]
 
@@ -45,6 +49,7 @@ def test_close_reason_values() -> None:
         "DUPLICATE",
         "WON",
         "LOST",
+        "DISQUALIFIED",
     ]
 
 

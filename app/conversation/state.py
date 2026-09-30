@@ -144,13 +144,20 @@ def record_inbound_outcome(
         for conversation in uow.conversations.list_by_contact(contact_id):
             _terminate(uow, conversation, S.DO_NOT_CONTACT, "DO_NOT_CONTACT", correlation_id=correlation_id, now=now)
     if lead is not None and lead.stage is LeadStage.CLOSED:
-        target = S.CONVERTED if lead.close_reason is CloseReason.WON else S.CLOSED
-        for conversation in uow.conversations.list_by_lead(lead.lead_id):
-            _terminate(uow, conversation, target, "LEAD_CLOSED", correlation_id=correlation_id, now=now)
+        record_lead_closed(uow, lead, correlation_id=correlation_id, now=now)
     if escalated:
         conversation = uow.conversations.get_by_thread(thread_id)
         if conversation is not None and conversation.status not in FROZEN and conversation.status is not S.OPERATOR_REVIEW:
             save(uow, conversation, status=S.OPERATOR_REVIEW, correlation_id=correlation_id, now=now)
+
+
+def record_lead_closed(uow: UnitOfWork, lead: Lead, *, correlation_id: str, now: datetime) -> None:
+    """The lead was closed (by Stage 6 or by an operator's pipeline decision): every
+    conversation of the lead ends (CONVERTED when won, else CLOSED), its follow-up job is
+    cancelled and undispatched follow-up drafts are cancelled. History is kept."""
+    target = S.CONVERTED if lead.close_reason is CloseReason.WON else S.CLOSED
+    for conversation in uow.conversations.list_by_lead(lead.lead_id):
+        _terminate(uow, conversation, target, "LEAD_CLOSED", correlation_id=correlation_id, now=now)
 
 
 def record_outbound_accepted(uow: UnitOfWork, outbound: OutboundMessage, *, correlation_id: str, now: datetime) -> Conversation | None:

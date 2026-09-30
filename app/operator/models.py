@@ -9,10 +9,12 @@ Read models keep three kinds of content apart:
 """
 
 import hashlib
+from datetime import date
+from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import AfterValidator, AwareDatetime, Field, SecretStr, StringConstraints
+from pydantic import AfterValidator, AwareDatetime, Field, SecretStr, StringConstraints, model_validator
 
 from app.core.enums import (
     ConfidenceBand,
@@ -27,11 +29,15 @@ from app.core.enums import (
     LeadStage,
     LeadStatus,
     CloseReason,
+    ConflictResolution,
+    DisqualificationReason,
+    LostReason,
     OutboundKind,
     OutboundStatus,
 )
 from app.core.models import EntityRef, KnowledgeAssessment
 from app.core.models.base import CoreModel
+from app.core.models.pipeline import CurrencyCode, FactValue, FieldKey, ShortText
 from app.core.models.types import EmailAddress, EntityId, NonEmptyStr, Sha256Hex, Version
 from app.core.validation import unique_items
 from app.llm import SenderIdentity
@@ -85,6 +91,16 @@ class CommandKind(StrEnum):
     COMPLETE_CAMPAIGN = "COMPLETE_CAMPAIGN"
     CANCEL_CAMPAIGN_MEMBER = "CANCEL_CAMPAIGN_MEMBER"
     SUPPRESS_CAMPAIGN_MEMBER = "SUPPRESS_CAMPAIGN_MEMBER"
+    # Sales pipeline (Stage 12).
+    RECORD_QUALIFICATION_FACT = "RECORD_QUALIFICATION_FACT"
+    RESOLVE_QUALIFICATION_CONFLICT = "RESOLVE_QUALIFICATION_CONFLICT"
+    APPROVE_QUALIFICATION = "APPROVE_QUALIFICATION"
+    DISQUALIFY_LEAD = "DISQUALIFY_LEAD"
+    CREATE_OPPORTUNITY = "CREATE_OPPORTUNITY"
+    START_NEGOTIATION = "START_NEGOTIATION"
+    MARK_LEAD_WON = "MARK_LEAD_WON"
+    MARK_LEAD_LOST = "MARK_LEAD_LOST"
+    REOPEN_LEAD = "REOPEN_LEAD"
 
 
 class RejectReason(StrEnum):
@@ -136,6 +152,22 @@ class BlockCode(StrEnum):
     CAMPAIGN_HAS_ACTIVE_MEMBERS = "CAMPAIGN_HAS_ACTIVE_MEMBERS"
     MEMBER_VERSION_CHANGED = "MEMBER_VERSION_CHANGED"
     MEMBER_ENDED = "MEMBER_ENDED"
+    # Sales pipeline (Stage 12); identical to app.pipeline.PipelineCode values.
+    TRANSITION_NOT_ALLOWED = "TRANSITION_NOT_ALLOWED"
+    QUALIFICATION_VERSION_CHANGED = "QUALIFICATION_VERSION_CHANGED"
+    QUALIFICATION_NOT_STARTED = "QUALIFICATION_NOT_STARTED"
+    QUALIFICATION_NOT_READY = "QUALIFICATION_NOT_READY"
+    QUALIFICATION_DECIDED = "QUALIFICATION_DECIDED"
+    QUALIFICATION_CONFLICT_OPEN = "QUALIFICATION_CONFLICT_OPEN"
+    QUALIFICATION_FIELD_UNKNOWN = "QUALIFICATION_FIELD_UNKNOWN"
+    CONFLICT_NOT_OPEN = "CONFLICT_NOT_OPEN"
+    OPPORTUNITY_EXISTS = "OPPORTUNITY_EXISTS"
+    OPPORTUNITY_REQUIRED = "OPPORTUNITY_REQUIRED"
+    OPPORTUNITY_VERSION_CHANGED = "OPPORTUNITY_VERSION_CHANGED"
+    OPPORTUNITY_NOT_ACTIVE = "OPPORTUNITY_NOT_ACTIVE"
+    OPPORTUNITY_ACTIVE = "OPPORTUNITY_ACTIVE"
+    NOT_REOPENABLE = "NOT_REOPENABLE"
+    REOPEN_TARGET_NOT_ALLOWED = "REOPEN_TARGET_NOT_ALLOWED"
 
 
 class _Command(CoreModel):
@@ -259,10 +291,102 @@ class SuppressCampaignMember(_MemberCommand):
     kind: Literal[CommandKind.SUPPRESS_CAMPAIGN_MEMBER] = CommandKind.SUPPRESS_CAMPAIGN_MEMBER
 
 
+# ---- Sales pipeline commands (Stage 12) -------------------------------------------------------
+# Every command binds to the versions the operator saw; a newer customer message, fact or
+# decision makes it stale. None of them sends, approves a draft or touches suppression.
+
+
+class _LeadCommand(_Command):
+    lead_id: EntityId
+
+
+class RecordQualificationFact(_LeadCommand):
+    """State a fact the operator knows (e.g. from a call). ``expected_qualification_version``
+    None means the operator saw no qualification yet."""
+
+    kind: Literal[CommandKind.RECORD_QUALIFICATION_FACT] = CommandKind.RECORD_QUALIFICATION_FACT
+    field: FieldKey
+    value: FactValue
+    expected_qualification_version: Version | None
+
+
+class ResolveQualificationConflict(_LeadCommand):
+    kind: Literal[CommandKind.RESOLVE_QUALIFICATION_CONFLICT] = CommandKind.RESOLVE_QUALIFICATION_CONFLICT
+    conflict_id: EntityId
+    resolution: ConflictResolution
+    expected_qualification_version: Version
+
+
+class ApproveQualification(_LeadCommand):
+    kind: Literal[CommandKind.APPROVE_QUALIFICATION] = CommandKind.APPROVE_QUALIFICATION
+    expected_lead_version: Version
+    expected_qualification_version: Version
+    note: OperatorNote | None = None
+
+
+class DisqualifyLead(_LeadCommand):
+    kind: Literal[CommandKind.DISQUALIFY_LEAD] = CommandKind.DISQUALIFY_LEAD
+    expected_lead_version: Version
+    reason: DisqualificationReason
+    note: OperatorNote | None = None
+
+
+class CreateOpportunity(_LeadCommand):
+    """Unknown commercial data stays None: nothing is estimated for the operator."""
+
+    kind: Literal[CommandKind.CREATE_OPPORTUNITY] = CommandKind.CREATE_OPPORTUNITY
+    expected_lead_version: Version
+    amount: Annotated[Decimal, Field(gt=0, max_digits=14, decimal_places=2)] | None = None
+    currency: CurrencyCode | None = None
+    scope: ShortText | None = None
+    expected_decision_date: date | None = None
+    next_step: ShortText | None = None
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if (self.amount is None) != (self.currency is None):
+            raise ValueError("amount and currency are known together or not at all")
+        return self
+
+
+class StartNegotiation(_LeadCommand):
+    kind: Literal[CommandKind.START_NEGOTIATION] = CommandKind.START_NEGOTIATION
+    expected_lead_version: Version
+    opportunity_id: EntityId
+    expected_opportunity_version: Version
+
+
+class MarkLeadWon(_LeadCommand):
+    kind: Literal[CommandKind.MARK_LEAD_WON] = CommandKind.MARK_LEAD_WON
+    expected_lead_version: Version
+    opportunity_id: EntityId
+    expected_opportunity_version: Version
+    note: OperatorNote | None = None
+
+
+class MarkLeadLost(_LeadCommand):
+    kind: Literal[CommandKind.MARK_LEAD_LOST] = CommandKind.MARK_LEAD_LOST
+    expected_lead_version: Version
+    reason: LostReason
+    note: OperatorNote | None = None
+
+
+class ReopenLead(_LeadCommand):
+    kind: Literal[CommandKind.REOPEN_LEAD] = CommandKind.REOPEN_LEAD
+    expected_lead_version: Version
+    target_stage: LeadStage
+    note: OperatorNote  # a reopen always states why
+
+
+PipelineCommand = (
+    RecordQualificationFact | ResolveQualificationConflict | ApproveQualification | DisqualifyLead | CreateOpportunity
+    | StartNegotiation | MarkLeadWon | MarkLeadLost | ReopenLead
+)
 CampaignCommand = ActivateCampaign | PauseCampaign | ResumeCampaign | CancelCampaign | CompleteCampaign
 MemberCommand = CancelCampaignMember | SuppressCampaignMember
 OperatorCommand = (
     ApproveDraft | RejectDraft | TakeOwnership | ResolveEscalation | ConversationCommand | CampaignCommand | MemberCommand
+    | PipelineCommand
 )
 
 

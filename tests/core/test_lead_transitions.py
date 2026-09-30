@@ -3,6 +3,7 @@ import itertools
 import pytest
 
 from app.core.decisions import is_allowed_lead_transition
+from app.core.decisions.lead_transitions import AUTOMATIC_STAGES
 from app.core.enums import CloseReason, LeadStage
 
 S = LeadStage
@@ -14,6 +15,10 @@ ALLOWED_FORWARD = {
     (S.ENGAGED, S.INTERESTED),
     (S.ENGAGED, S.MEETING_REQUESTED),
     (S.INTERESTED, S.MEETING_REQUESTED),
+    # Stage 12: qualification starts automatically once facts are being collected.
+    (S.ENGAGED, S.QUALIFYING),
+    (S.INTERESTED, S.QUALIFYING),
+    (S.MEETING_REQUESTED, S.QUALIFYING),
 }
 OPEN_STAGES = [stage for stage in LeadStage if stage is not S.CLOSED]
 
@@ -29,7 +34,14 @@ def test_forward_transition_matrix_without_close_reason(current: LeadStage, targ
 )
 def test_any_open_stage_can_close_with_a_valid_reason(current: LeadStage, reason: CloseReason) -> None:
     # NO_RESPONSE means follow-ups were exhausted without a reply: only from CONTACTED.
-    expected = reason is not CloseReason.NO_RESPONSE or current is S.CONTACTED
+    # NOT_INTERESTED (an automatic, sentiment-based close) never applies to a lead an
+    # operator has moved into the commercial stages (Stage 12).
+    if reason is CloseReason.NO_RESPONSE:
+        expected = current is S.CONTACTED
+    elif reason is CloseReason.NOT_INTERESTED:
+        expected = current in AUTOMATIC_STAGES
+    else:
+        expected = True
     assert is_allowed_lead_transition(current, S.CLOSED, reason) is expected
 
 

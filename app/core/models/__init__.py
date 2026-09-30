@@ -33,10 +33,26 @@ from app.core.models.lead import Lead
 from app.core.models.operator import OperatorCommand, OperatorResponse
 from app.core.models.outbound import OutboundMessage
 from app.core.models.permit import SendPermit
+from app.core.models.pipeline import (
+    ACTIVE_OPPORTUNITY_STATUSES,
+    FactEvidence,
+    LeadQualification,
+    Opportunity,
+    QualificationConflict,
+    QualificationFact,
+    same_value,
+)
 from app.core.models.prospect import ProspectCompany, ProspectContact
 from app.core.models.refs import Actor, EntityRef
 
 __all__ = [
+    "ACTIVE_OPPORTUNITY_STATUSES",
+    "FactEvidence",
+    "LeadQualification",
+    "Opportunity",
+    "QualificationConflict",
+    "QualificationFact",
+    "same_value",
     "OPEN_CAMPAIGN_JOB_STATUSES",
     "OPEN_FOLLOW_UP_JOB_STATUSES",
     "TERMINAL_CONVERSATION_STATUSES",

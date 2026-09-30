@@ -26,6 +26,19 @@ from app.core.enums.knowledge import (
 )
 from app.core.enums.lead import CloseReason, LeadIntent, LeadOrigin, LeadStage, LeadStatus
 from app.core.enums.operator import OperatorCommandKind, OperatorResponseStatus
+from app.core.enums.pipeline import (
+    BlockerCode,
+    ConflictResolution,
+    ConflictStatus,
+    DisqualificationReason,
+    FactSource,
+    LostReason,
+    NextActionOwner,
+    NextActionType,
+    OpportunityStatus,
+    PipelineTrigger,
+    QualificationStatus,
+)
 from app.core.enums.outbound import (
     FollowUpCancelReason,
     FollowUpStatus,
@@ -50,6 +63,17 @@ from app.core.enums.reply import (
 )
 
 __all__ = [
+    "BlockerCode",
+    "ConflictResolution",
+    "ConflictStatus",
+    "DisqualificationReason",
+    "FactSource",
+    "LostReason",
+    "NextActionOwner",
+    "NextActionType",
+    "OpportunityStatus",
+    "PipelineTrigger",
+    "QualificationStatus",
     "SUPPORTED_REVIEW_MODES_V1",
     "ActorType",
     "CampaignJobStatus",

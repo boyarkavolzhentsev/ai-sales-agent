@@ -179,11 +179,16 @@ class SalesAgentRuntime:
 
     def handle_inbound(self, envelope: InboundEnvelope, *, correlation_id: str) -> InboundResult:
         """One observed inbound email through the Stage 6 service (which owns identity,
-        classification, knowledge, suppression, the campaign handoff and conversation state)."""
+        classification, knowledge, suppression, the campaign handoff and conversation state),
+        then the Stage 12 pipeline hook (intent on the lead, qualification extraction) as
+        its own step. An extraction failure never fails this call; a persistence failure
+        propagates and replaying the same message is safe (both steps are idempotent)."""
         with self._work() as services:
             if services.inbound is None:
                 raise CapabilityUnavailableError("inbound processing needs an LLM transport")
-            return services.inbound.process(envelope, correlation_id=correlation_id)
+            result = services.inbound.process(envelope, correlation_id=correlation_id)
+            services.pipeline.record_inbound(result, correlation_id=correlation_id)
+            return result
 
     # ---- Internals ------------------------------------------------------------------------------
 

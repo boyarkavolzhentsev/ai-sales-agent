@@ -22,6 +22,7 @@ from app.dispatch import DispatchConfig
 from app.inbound import InboundConfig
 from app.llm import SenderIdentity
 from app.operator import OperatorConfig
+from app.pipeline import PipelineConfig
 from app.persistence import MEMORY
 from app.policy import KillSwitchState, LimitPolicy, SendingWindow
 
@@ -86,6 +87,7 @@ class RuntimeConfig(CoreModel):
     campaign: CampaignSettings = CampaignSettings()
     worker: WorkerSettings = WorkerSettings()
     secrets: ProviderSecrets = ProviderSecrets()
+    pipeline: PipelineConfig = PipelineConfig()
 
     @model_validator(mode="after")
     def _check(self) -> Self:

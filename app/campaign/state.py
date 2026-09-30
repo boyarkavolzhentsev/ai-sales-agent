@@ -140,6 +140,20 @@ def record_inbound_outcome(uow: UnitOfWork, *, contact_id: str | None, lead: Lea
                         correlation_id=correlation_id, now=now)
 
 
+def record_lead_closed(uow: UnitOfWork, lead: Lead, *, correlation_id: str, now: datetime) -> None:
+    """An operator closed the lead (Stage 12 pipeline decision). WON converts the
+    membership exactly as a Stage 6 outcome does; any other close ends a membership that
+    is still in sequence (its job, undispatched campaign drafts and plan are stopped). A
+    membership that already ended keeps its terminal status."""
+    if lead.close_reason is CloseReason.WON:
+        record_inbound_outcome(uow, contact_id=None, lead=lead, dnc_added=False, correlation_id=correlation_id, now=now)
+        return
+    member = uow.campaign_members.get_by_lead(lead.lead_id)
+    if member is not None and member.status in IN_SEQUENCE:
+        stop_member(uow, member, M.CANCELLED, "LEAD_CLOSED", plan_reason=FollowUpCancelReason.LEAD_CLOSED,
+                    correlation_id=correlation_id, now=now)
+
+
 def record_suppressed(uow: UnitOfWork, contact_id: str, *, correlation_id: str, now: datetime) -> None:
     for member in uow.campaign_members.list_by_contact(contact_id):
         if member.status is not M.SUPPRESSED:

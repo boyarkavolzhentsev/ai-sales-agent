@@ -26,6 +26,7 @@ from app.persistence.repositories.sqlite.operator import (
     SqliteOperatorResponseRepository,
 )
 from app.persistence.repositories.sqlite.outbound import SqliteOutboundMessageRepository
+from app.persistence.repositories.sqlite.pipeline import SqliteLeadQualificationRepository, SqliteOpportunityRepository
 from app.persistence.repositories.sqlite.provenance import SqliteProvenanceRepository
 from app.persistence.repositories.sqlite.quota_reservations import (
     SqliteQuotaReservationRepository,
@@ -48,9 +49,11 @@ __all__ = [
     "SqliteIdempotencyRepository",
     "SqliteKnowledgeIndexRepository",
     "SqliteKnowledgeSourceMetaRepository",
+    "SqliteLeadQualificationRepository",
     "SqliteLeadRepository",
     "SqliteOperatorCommandRepository",
     "SqliteOperatorResponseRepository",
+    "SqliteOpportunityRepository",
     "SqliteOutboundMessageRepository",
     "SqliteProspectCompanyRepository",
     "SqliteProspectContactRepository",

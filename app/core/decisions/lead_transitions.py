@@ -1,8 +1,11 @@
-"""Lead stage transition table (Stage 0, approved).
+"""Lead stage transition table (Stage 0, approved; extended in Stage 12).
 
-Automatic transitions only move forward. CLOSED is terminal; re-opening is not
-implemented yet. Operator-only closes (WON/LOST) are not actor-checked here; that
-belongs to the later actor-aware LeadManager.
+This is the AUTOMATIC subset of the sales pipeline: the forward moves automation may make
+from provider and customer facts (Stage 6 replies, Stage 8/10 accepted sends, Stage 12
+qualification start), plus the structural validity of a close. CLOSED is terminal here.
+Operator-only moves (QUALIFIED, OPPORTUNITY, NEGOTIATION, WON, LOST, DISQUALIFIED,
+re-opening) are decided by the actor-aware ``app.pipeline.policy``, which only ever
+builds on this table; nothing here makes a commercial judgement.
 """
 
 from collections.abc import Mapping
@@ -12,16 +15,29 @@ from app.core.enums import CloseReason, LeadStage
 _FORWARD_TRANSITIONS: Mapping[LeadStage, frozenset[LeadStage]] = {
     LeadStage.NEW: frozenset({LeadStage.CONTACTED, LeadStage.ENGAGED}),
     LeadStage.CONTACTED: frozenset({LeadStage.ENGAGED}),
-    LeadStage.ENGAGED: frozenset({LeadStage.INTERESTED, LeadStage.MEETING_REQUESTED}),
-    LeadStage.INTERESTED: frozenset({LeadStage.MEETING_REQUESTED}),
-    LeadStage.MEETING_REQUESTED: frozenset(),
+    LeadStage.ENGAGED: frozenset({LeadStage.INTERESTED, LeadStage.MEETING_REQUESTED, LeadStage.QUALIFYING}),
+    LeadStage.INTERESTED: frozenset({LeadStage.MEETING_REQUESTED, LeadStage.QUALIFYING}),
+    LeadStage.MEETING_REQUESTED: frozenset({LeadStage.QUALIFYING}),
+    # Qualification collects facts; everything after it is an operator decision.
+    LeadStage.QUALIFYING: frozenset(),
+    LeadStage.QUALIFIED: frozenset(),
+    LeadStage.OPPORTUNITY: frozenset(),
+    LeadStage.NEGOTIATION: frozenset(),
     LeadStage.CLOSED: frozenset(),
 }
+
+# Stages whose position was set by automation. A lead in a later (operator) stage is
+# never closed by an automatic, sentiment-based decision (e.g. NOT_INTERESTED).
+AUTOMATIC_STAGES = frozenset({
+    LeadStage.NEW, LeadStage.CONTACTED, LeadStage.ENGAGED, LeadStage.INTERESTED, LeadStage.MEETING_REQUESTED,
+    LeadStage.QUALIFYING,
+})
 
 # NO_RESPONSE means "follow-ups exhausted without a reply", which only applies to a
 # lead that was contacted and never replied.
 _CLOSE_REASON_ALLOWED_FROM: Mapping[CloseReason, frozenset[LeadStage]] = {
     CloseReason.NO_RESPONSE: frozenset({LeadStage.CONTACTED}),
+    CloseReason.NOT_INTERESTED: AUTOMATIC_STAGES,
 }
 
 
