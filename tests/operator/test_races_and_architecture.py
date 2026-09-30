@@ -90,6 +90,7 @@ OPERATOR_DIR = Path(__file__).resolve().parents[2] / "app" / "operator"
 ALLOWED_APP_MODULES = (
     "app.core", "app.persistence", "app.knowledge.retrieval", "app.llm", "app.inbound", "app.operator",
     "app.policy.suppression", "app.conversation", "app.campaign", "app.pipeline",
+    "app.commercial",
 )
 FORBIDDEN_MODULES = (
     "smtplib", "imaplib", "poplib", "http", "socket", "ssl", "urllib.request", "requests", "httpx", "aiohttp",

@@ -25,7 +25,7 @@ APP = Path(__file__).resolve().parents[2] / "app"
 def test_fresh_database_reaches_v8(db_path: Path) -> None:
     raw = sqlite3.connect(db_path)
     try:
-        assert current_version(raw) == latest_version() == len(MIGRATIONS) == 8
+        assert current_version(raw) == latest_version() == len(MIGRATIONS) >= 8
         names = {r[0] for r in raw.execute("SELECT name FROM sqlite_master")}
     finally:
         raw.close()
@@ -47,8 +47,8 @@ def test_a_v7_database_upgrades_intact_and_nothing_is_backfilled(tmp_path: Path)
         activate(db)
         member_id = enrolled(db)
     with Database(path) as db:
-        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=1))) == 8
-        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=2))) == 8  # repeated: idempotent
+        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=1))) == latest_version() >= 8
+        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=2))) == latest_version()  # repeated: idempotent
         with db.transaction() as uow:
             assert uow.qualifications.count_by_status() == {} and uow.opportunities.count_by_status() == {}
             assert uow.campaign_members.get(member_id) is not None

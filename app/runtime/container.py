@@ -5,7 +5,9 @@ Adapters are the existing boundary Protocols; a future real provider implements 
 - ``LLMTransport`` (Stage 5, behind ``StructuredLLM``),
 - ``OperatorAuthenticator`` (Stage 7),
 - ``QualificationExtractor`` and ``SalesAdvisor`` (Stage 12 AI contracts; fakes only
-  until the final integration phase).
+  until the final integration phase),
+- ``CommercialExtractor`` (Stage 13; fakes only) and a ``PriceCatalog`` (default: approved
+  internal knowledge facts).
 The offline default configures none of the provider adapters, so the capabilities that
 need them are simply unavailable: no fake ever fabricates a provider outcome in a real
 database. Tests pass deterministic fakes explicitly.
@@ -22,6 +24,7 @@ from app.dispatch import DispatchReconciler, DispatchService, EmailTransport
 from app.inbound import InboundService
 from app.llm import LLMTransport, StructuredLLM
 from app.operator import OperatorAuthenticator, OperatorCredential, OperatorService
+from app.commercial import CommercialExtractor, CommercialService, PriceCatalog
 from app.persistence import Clock, Database
 from app.pipeline import PipelineService, QualificationExtractor, SalesAdvisor
 from app.runtime.config import RuntimeConfig
@@ -42,6 +45,8 @@ class Adapters:
     authenticator: OperatorAuthenticator = field(default_factory=DenyAllAuthenticator)
     qualification_extractor: QualificationExtractor | None = None
     sales_advisor: SalesAdvisor | None = None
+    commercial_extractor: CommercialExtractor | None = None
+    price_catalog: PriceCatalog | None = None
 
 
 def offline_adapters() -> Adapters:
@@ -77,6 +82,7 @@ class Services:
     dispatch: DispatchService | None
     inbound: InboundService | None
     pipeline: PipelineService
+    commercial: CommercialService
 
 
 def build_services(db: Database, clock: Clock, config: RuntimeConfig, adapters: Adapters) -> Services:
@@ -89,7 +95,8 @@ def build_services(db: Database, clock: Clock, config: RuntimeConfig, adapters: 
     if adapters.llm_transport is not None:
         inbound = InboundService(db, StructuredLLM(adapters.llm_transport, clock), clock, config.inbound_config())
     return Services(
-        operator=OperatorService(db, clock, config.operator_config(), adapters.authenticator, config.pipeline),
+        operator=OperatorService(db, clock, config.operator_config(), adapters.authenticator, config.pipeline,
+                                 config.commercial, adapters.price_catalog),
         campaign_enroller=CampaignEnroller(db, clock),
         campaign_scheduler=CampaignScheduler(db, clock, campaign_config),
         campaign_executor=CampaignExecutor(db, clock, campaign_config),
@@ -99,4 +106,6 @@ def build_services(db: Database, clock: Clock, config: RuntimeConfig, adapters: 
         inbound=inbound,
         pipeline=PipelineService(db, clock, config.pipeline, extractor=adapters.qualification_extractor,
                                  advisor=adapters.sales_advisor),
+        commercial=CommercialService(db, clock, config.commercial, extractor=adapters.commercial_extractor,
+                                     catalog=adapters.price_catalog),
     )

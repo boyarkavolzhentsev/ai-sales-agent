@@ -31,12 +31,15 @@ from app.core.enums import (
     CloseReason,
     ConflictResolution,
     DisqualificationReason,
+    ObjectionStatus,
+    TermType,
     LostReason,
     OutboundKind,
     OutboundStatus,
 )
-from app.core.models import EntityRef, KnowledgeAssessment
+from app.core.models import CommercialValue, EntityRef, KnowledgeAssessment, Money
 from app.core.models.base import CoreModel
+from app.core.models.commercial import ItemRef, Percent, Quantity, TermKey, UnitName
 from app.core.models.pipeline import CurrencyCode, FactValue, FieldKey, ShortText
 from app.core.models.types import EmailAddress, EntityId, NonEmptyStr, Sha256Hex, Version
 from app.core.validation import unique_items
@@ -101,6 +104,20 @@ class CommandKind(StrEnum):
     MARK_LEAD_WON = "MARK_LEAD_WON"
     MARK_LEAD_LOST = "MARK_LEAD_LOST"
     REOPEN_LEAD = "REOPEN_LEAD"
+    # Commercial decisioning (Stage 13).
+    SET_COMMERCIAL_TERM = "SET_COMMERCIAL_TERM"
+    APPROVE_TERM_REQUEST = "APPROVE_TERM_REQUEST"
+    REJECT_TERM_REQUEST = "REJECT_TERM_REQUEST"
+    CREATE_PROPOSAL = "CREATE_PROPOSAL"
+    UPDATE_PROPOSAL = "UPDATE_PROPOSAL"
+    APPROVE_PROPOSAL = "APPROVE_PROPOSAL"
+    REVISE_PROPOSAL = "REVISE_PROPOSAL"
+    WITHDRAW_PROPOSAL = "WITHDRAW_PROPOSAL"
+    MARK_PROPOSAL_PRESENTED = "MARK_PROPOSAL_PRESENTED"
+    MARK_PROPOSAL_ACCEPTED = "MARK_PROPOSAL_ACCEPTED"
+    MARK_PROPOSAL_DECLINED = "MARK_PROPOSAL_DECLINED"
+    UPDATE_OBJECTION = "UPDATE_OBJECTION"
+    DISMISS_COMMERCIAL_SIGNAL = "DISMISS_COMMERCIAL_SIGNAL"
 
 
 class RejectReason(StrEnum):
@@ -168,6 +185,41 @@ class BlockCode(StrEnum):
     OPPORTUNITY_ACTIVE = "OPPORTUNITY_ACTIVE"
     NOT_REOPENABLE = "NOT_REOPENABLE"
     REOPEN_TARGET_NOT_ALLOWED = "REOPEN_TARGET_NOT_ALLOWED"
+    # Commercial decisioning (Stage 13); identical to app.commercial codes and blockers.
+    OPPORTUNITY_NOT_OPEN = "OPPORTUNITY_NOT_OPEN"
+    QUALIFICATION_NOT_APPROVED = "QUALIFICATION_NOT_APPROVED"
+    PROPOSAL_EXISTS = "PROPOSAL_EXISTS"
+    REVISION_VERSION_CHANGED = "REVISION_VERSION_CHANGED"
+    REVISION_NOT_EDITABLE = "REVISION_NOT_EDITABLE"
+    REVISION_NOT_CURRENT = "REVISION_NOT_CURRENT"
+    REVISION_STATUS_INVALID = "REVISION_STATUS_INVALID"
+    PROPOSAL_NOT_READY = "PROPOSAL_NOT_READY"
+    CURRENCY_NOT_ALLOWED = "CURRENCY_NOT_ALLOWED"
+    CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
+    TERM_VALUE_INVALID = "TERM_VALUE_INVALID"
+    TERM_VERSION_CHANGED = "TERM_VERSION_CHANGED"
+    DISCOUNT_NOT_ALLOWED = "DISCOUNT_NOT_ALLOWED"
+    DISCOUNT_ABOVE_LIMIT = "DISCOUNT_ABOVE_LIMIT"
+    REQUEST_VERSION_CHANGED = "REQUEST_VERSION_CHANGED"
+    REQUEST_NOT_OPEN = "REQUEST_NOT_OPEN"
+    OBJECTION_VERSION_CHANGED = "OBJECTION_VERSION_CHANGED"
+    OBJECTION_NOT_OPEN = "OBJECTION_NOT_OPEN"
+    SIGNAL_VERSION_CHANGED = "SIGNAL_VERSION_CHANGED"
+    SIGNAL_NOT_OPEN = "SIGNAL_NOT_OPEN"
+    DNC = "DNC"
+    QUALIFICATION_CONFLICT = "QUALIFICATION_CONFLICT"
+    NO_PROPOSAL = "NO_PROPOSAL"
+    NO_PROPOSAL_LINES = "NO_PROPOSAL_LINES"
+    MISSING_PRICE = "MISSING_PRICE"
+    MISSING_CURRENCY = "MISSING_CURRENCY"
+    MISSING_REQUIRED_TERM = "MISSING_REQUIRED_TERM"
+    UNAPPROVED_TERM_REQUEST = "UNAPPROVED_TERM_REQUEST"
+    OPEN_OBJECTION = "OPEN_OBJECTION"
+    PROPOSAL_NOT_APPROVED = "PROPOSAL_NOT_APPROVED"
+    PROPOSAL_NOT_PRESENTED = "PROPOSAL_NOT_PRESENTED"
+    PROPOSAL_REVISION_REQUIRED = "PROPOSAL_REVISION_REQUIRED"
+    ACCEPTANCE_SIGNAL = "ACCEPTANCE_SIGNAL"
+    DECLINE_SIGNAL = "DECLINE_SIGNAL"
 
 
 class _Command(CoreModel):
@@ -378,6 +430,123 @@ class ReopenLead(_LeadCommand):
     note: OperatorNote  # a reopen always states why
 
 
+# ---- Commercial commands (Stage 13) ---------------------------------------------------------
+# Every value an operator sets here is the approval: nothing an extractor or advisor
+# proposes becomes a term, price, discount or proposal decision without one of these.
+
+
+class SetCommercialTerm(_Command):
+    kind: Literal[CommandKind.SET_COMMERCIAL_TERM] = CommandKind.SET_COMMERCIAL_TERM
+    opportunity_id: EntityId
+    term_type: TermType
+    term_key: TermKey = "main"
+    value: CommercialValue
+    expected_term_version: Version | None  # None: the operator saw no approved value
+
+
+class ApproveTermRequest(_Command):
+    kind: Literal[CommandKind.APPROVE_TERM_REQUEST] = CommandKind.APPROVE_TERM_REQUEST
+    request_id: EntityId
+    expected_request_version: Version
+    expected_term_version: Version | None  # the approved term the operator saw (None: none)
+
+
+class RejectTermRequest(_Command):
+    kind: Literal[CommandKind.REJECT_TERM_REQUEST] = CommandKind.REJECT_TERM_REQUEST
+    request_id: EntityId
+    expected_request_version: Version
+    reason: OperatorNote
+
+
+class CreateProposal(_Command):
+    kind: Literal[CommandKind.CREATE_PROPOSAL] = CommandKind.CREATE_PROPOSAL
+    opportunity_id: EntityId
+    expected_opportunity_version: Version
+    currency: CurrencyCode
+
+
+class ProposalLineInput(CoreModel):
+    line_id: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")]
+    item_ref: ItemRef
+    quantity: Quantity
+    unit: UnitName
+    description: ShortText | None = None
+    unit_price: Money | None = None  # None: use an approved knowledge price, if one exists
+    discount_percent: Percent | None = None
+
+
+class TermOverrideInput(CoreModel):
+    term_type: TermType
+    term_key: TermKey = "main"
+    value: CommercialValue
+
+
+class UpdateProposal(_Command):
+    """Replaces the DRAFT revision's content; approved revisions are never edited."""
+
+    kind: Literal[CommandKind.UPDATE_PROPOSAL] = CommandKind.UPDATE_PROPOSAL
+    revision_id: EntityId
+    expected_revision_version: Version
+    lines: Annotated[tuple[ProposalLineInput, ...], Field(max_length=100)] = ()
+    term_overrides: Annotated[tuple[TermOverrideInput, ...], Field(max_length=30)] = ()
+    assumptions: Annotated[tuple[ShortText, ...], Field(max_length=20)] = ()
+    exclusions: Annotated[tuple[ShortText, ...], Field(max_length=20)] = ()
+    next_step: ShortText | None = None
+
+
+class _RevisionCommand(_Command):
+    revision_id: EntityId
+    expected_revision_version: Version
+
+
+class ApproveProposal(_RevisionCommand):
+    kind: Literal[CommandKind.APPROVE_PROPOSAL] = CommandKind.APPROVE_PROPOSAL
+
+
+class ReviseProposal(_RevisionCommand):
+    kind: Literal[CommandKind.REVISE_PROPOSAL] = CommandKind.REVISE_PROPOSAL
+
+
+class WithdrawProposal(_RevisionCommand):
+    kind: Literal[CommandKind.WITHDRAW_PROPOSAL] = CommandKind.WITHDRAW_PROPOSAL
+    reason: OperatorNote
+
+
+class MarkProposalPresented(_RevisionCommand):
+    """The operator confirms the approved revision was actually communicated."""
+
+    kind: Literal[CommandKind.MARK_PROPOSAL_PRESENTED] = CommandKind.MARK_PROPOSAL_PRESENTED
+
+
+class MarkProposalAccepted(_RevisionCommand):
+    kind: Literal[CommandKind.MARK_PROPOSAL_ACCEPTED] = CommandKind.MARK_PROPOSAL_ACCEPTED
+    note: OperatorNote | None = None
+
+
+class MarkProposalDeclined(_RevisionCommand):
+    kind: Literal[CommandKind.MARK_PROPOSAL_DECLINED] = CommandKind.MARK_PROPOSAL_DECLINED
+    reason: OperatorNote | None = None
+
+
+class UpdateObjection(_Command):
+    kind: Literal[CommandKind.UPDATE_OBJECTION] = CommandKind.UPDATE_OBJECTION
+    objection_id: EntityId
+    expected_objection_version: Version
+    status: ObjectionStatus
+    resolution: OperatorNote | None = None
+
+
+class DismissCommercialSignal(_Command):
+    kind: Literal[CommandKind.DISMISS_COMMERCIAL_SIGNAL] = CommandKind.DISMISS_COMMERCIAL_SIGNAL
+    signal_id: EntityId
+    expected_signal_version: Version
+
+
+CommercialCommand = (
+    SetCommercialTerm | ApproveTermRequest | RejectTermRequest | CreateProposal | UpdateProposal | ApproveProposal
+    | ReviseProposal | WithdrawProposal | MarkProposalPresented | MarkProposalAccepted | MarkProposalDeclined
+    | UpdateObjection | DismissCommercialSignal
+)
 PipelineCommand = (
     RecordQualificationFact | ResolveQualificationConflict | ApproveQualification | DisqualifyLead | CreateOpportunity
     | StartNegotiation | MarkLeadWon | MarkLeadLost | ReopenLead
@@ -386,7 +555,7 @@ CampaignCommand = ActivateCampaign | PauseCampaign | ResumeCampaign | CancelCamp
 MemberCommand = CancelCampaignMember | SuppressCampaignMember
 OperatorCommand = (
     ApproveDraft | RejectDraft | TakeOwnership | ResolveEscalation | ConversationCommand | CampaignCommand | MemberCommand
-    | PipelineCommand
+    | PipelineCommand | CommercialCommand
 )
 
 

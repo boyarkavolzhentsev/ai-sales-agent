@@ -6,6 +6,13 @@ from app.persistence.repositories.sqlite.campaign_members import (
     SqliteCampaignMemberRepository,
 )
 from app.persistence.repositories.sqlite.campaigns import SqliteCampaignRepository
+from app.persistence.repositories.sqlite.commercial import (
+    SqliteCommercialSignalRepository,
+    SqliteCommercialTermRepository,
+    SqliteObjectionRepository,
+    SqliteProposalRevisionRepository,
+    SqliteTermRequestRepository,
+)
 from app.persistence.repositories.sqlite.companies import SqliteProspectCompanyRepository
 from app.persistence.repositories.sqlite.contacts import SqliteProspectContactRepository
 from app.persistence.repositories.sqlite.conversations import (
@@ -34,6 +41,11 @@ from app.persistence.repositories.sqlite.quota_reservations import (
 from app.persistence.repositories.sqlite.threads import SqliteEmailThreadRepository
 
 __all__ = [
+    "SqliteCommercialSignalRepository",
+    "SqliteCommercialTermRepository",
+    "SqliteObjectionRepository",
+    "SqliteProposalRevisionRepository",
+    "SqliteTermRequestRepository",
     "SqliteAuditRepository",
     "SqliteCampaignJobRepository",
     "SqliteCampaignMemberRepository",

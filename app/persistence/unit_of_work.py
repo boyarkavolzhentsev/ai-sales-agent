@@ -28,6 +28,11 @@ from app.persistence.repositories.protocols import (
     QuotaReservationRepository,
 )
 from app.persistence.repositories.sqlite import (
+    SqliteCommercialSignalRepository,
+    SqliteCommercialTermRepository,
+    SqliteObjectionRepository,
+    SqliteProposalRevisionRepository,
+    SqliteTermRequestRepository,
     SqliteAuditRepository,
     SqliteCampaignJobRepository,
     SqliteCampaignMemberRepository,
@@ -91,6 +96,12 @@ class UnitOfWork:
         self.campaign_jobs: CampaignJobRepository = SqliteCampaignJobRepository(tx)
         self.qualifications: LeadQualificationRepository = SqliteLeadQualificationRepository(tx)
         self.opportunities: OpportunityRepository = SqliteOpportunityRepository(tx)
+        # Commercial decisioning (Stage 13).
+        self.proposal_revisions = SqliteProposalRevisionRepository(tx)
+        self.commercial_terms = SqliteCommercialTermRepository(tx)
+        self.term_requests = SqliteTermRequestRepository(tx)
+        self.objections = SqliteObjectionRepository(tx)
+        self.commercial_signals = SqliteCommercialSignalRepository(tx)
 
     def savepoint(self) -> AbstractContextManager[None]:
         """All-or-nothing sub-unit: writes inside it are undone if it raises, while the

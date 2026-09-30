@@ -83,6 +83,20 @@ from app.operator.errors import (
 )
 from app.operator.models import (
     ActivateCampaign,
+    ApproveProposal,
+    ApproveTermRequest,
+    CreateProposal,
+    DismissCommercialSignal,
+    MarkProposalAccepted,
+    MarkProposalDeclined,
+    MarkProposalPresented,
+    RejectTermRequest,
+    ReviseProposal,
+    SetCommercialTerm,
+    UpdateObjection,
+    UpdateProposal,
+    WithdrawProposal,
+
     ApproveQualification,
     CreateOpportunity,
     DisqualifyLead,
@@ -136,6 +150,23 @@ from app.operator.review import (
     suppression_scopes,
 )
 from app.persistence import Clock, Database, DuplicateIdempotencyKeyError, UnitOfWork
+from app.commercial import lifecycle as commercial_lifecycle
+from app.commercial import negotiation as commercial_negotiation
+from app.commercial import proposals as commercial_proposals
+from app.commercial import terms as commercial_terms
+from app.commercial.config import CommercialConfig
+from app.commercial.errors import CommercialError, CommercialNotFoundError
+from app.commercial.guards import load_opportunity, require_active
+from app.commercial.pricing import KnowledgePriceCatalog, PriceCatalog
+from app.commercial.proposals import LineInput, TermInput
+from app.commercial.draft import ProposalDraft, build_proposal_draft
+from app.commercial.state import gather as commercial_gather
+from app.commercial.views import CommercialMetrics, CommercialQueue, CommercialView
+from app.commercial.views import metrics as commercial_metrics
+from app.commercial.views import opportunity_view
+from app.commercial.views import queue as commercial_queue
+from app.core.enums import TermSource
+from app.core.models import ValueSource
 from app.pipeline import lifecycle as pipeline_lifecycle
 from app.pipeline import qualification as pipeline_qualification
 from app.pipeline.config import PipelineConfig
@@ -175,13 +206,16 @@ def command_event_id(command_id: str) -> str:
 class OperatorService:
     def __init__(
         self, db: Database, clock: Clock, config: OperatorConfig, authenticator: OperatorAuthenticator,
-        pipeline: PipelineConfig | None = None,
+        pipeline: PipelineConfig | None = None, commercial: CommercialConfig | None = None,
+        price_catalog: PriceCatalog | None = None,
     ) -> None:
         self._db = db
         self._clock = clock
         self._config = config
         self._authenticator = authenticator
         self._pipeline = pipeline or PipelineConfig()
+        self._commercial = commercial or CommercialConfig()
+        self._catalog = price_catalog or KnowledgePriceCatalog(self._commercial.knowledge_locale)
 
     # ---- Reads ----------------------------------------------------------------------------
 
@@ -426,6 +460,75 @@ class OperatorService:
     def reopen_lead(self, credential: object, command: ReopenLead) -> CommandResult:
         return self._execute(credential, command, self._reopen)
 
+    # ---- Commercial decisioning (Stage 13) --------------------------------------------------
+
+    def get_commercial_view(self, credential: object, opportunity_id: str) -> CommercialView:
+        authorize(self._authenticator, self._config, credential)
+        with self._db.transaction() as uow:
+            opportunity = uow.opportunities.get(opportunity_id)
+            if opportunity is None:
+                raise OperatorNotFoundError(f"opportunity {opportunity_id} not found")
+            return opportunity_view(uow, self._commercial.profile, opportunity, self._clock.now())
+
+    def get_proposal_draft(self, credential: object, revision_id: str) -> ProposalDraft:
+        authorize(self._authenticator, self._config, credential)
+        with self._db.transaction() as uow:
+            revision = uow.proposal_revisions.get(revision_id)
+            opportunity = uow.opportunities.get(revision.opportunity_id) if revision else None
+            if revision is None or opportunity is None:
+                raise OperatorNotFoundError(f"proposal revision {revision_id} not found")
+            now = self._clock.now()
+            return build_proposal_draft(self._commercial.profile, commercial_gather(uow, opportunity, now), revision, now)
+
+    def list_commercial(self, credential: object, which: CommercialQueue) -> tuple[CommercialView, ...]:
+        authorize(self._authenticator, self._config, credential)
+        with self._db.transaction() as uow:
+            return commercial_queue(uow, self._commercial.profile, which, self._clock.now(), self._config.max_list_items)
+
+    def get_commercial_metrics(self, credential: object) -> CommercialMetrics:
+        authorize(self._authenticator, self._config, credential)
+        with self._db.transaction() as uow:
+            return commercial_metrics(uow)
+
+    def set_commercial_term(self, credential: object, command: SetCommercialTerm) -> CommandResult:
+        return self._execute(credential, command, self._set_commercial_term)
+
+    def approve_term_request(self, credential: object, command: ApproveTermRequest) -> CommandResult:
+        return self._execute(credential, command, self._approve_term_request)
+
+    def reject_term_request(self, credential: object, command: RejectTermRequest) -> CommandResult:
+        return self._execute(credential, command, self._reject_term_request)
+
+    def create_proposal(self, credential: object, command: CreateProposal) -> CommandResult:
+        return self._execute(credential, command, self._create_proposal)
+
+    def update_proposal(self, credential: object, command: UpdateProposal) -> CommandResult:
+        return self._execute(credential, command, self._update_proposal)
+
+    def approve_proposal(self, credential: object, command: ApproveProposal) -> CommandResult:
+        return self._execute(credential, command, self._approve_proposal)
+
+    def revise_proposal(self, credential: object, command: ReviseProposal) -> CommandResult:
+        return self._execute(credential, command, self._revise_proposal)
+
+    def withdraw_proposal(self, credential: object, command: WithdrawProposal) -> CommandResult:
+        return self._execute(credential, command, self._withdraw_proposal)
+
+    def mark_proposal_presented(self, credential: object, command: MarkProposalPresented) -> CommandResult:
+        return self._execute(credential, command, self._mark_proposal_presented)
+
+    def mark_proposal_accepted(self, credential: object, command: MarkProposalAccepted) -> CommandResult:
+        return self._execute(credential, command, self._mark_proposal_accepted)
+
+    def mark_proposal_declined(self, credential: object, command: MarkProposalDeclined) -> CommandResult:
+        return self._execute(credential, command, self._mark_proposal_declined)
+
+    def update_objection(self, credential: object, command: UpdateObjection) -> CommandResult:
+        return self._execute(credential, command, self._update_objection)
+
+    def dismiss_commercial_signal(self, credential: object, command: DismissCommercialSignal) -> CommandResult:
+        return self._execute(credential, command, self._dismiss_commercial_signal)
+
     def _execute[C: OperatorCommand](
         self,
         credential: object,
@@ -453,7 +556,10 @@ class OperatorService:
             except PipelineError as exc:
                 codes = tuple(BlockCode(code.value) for code in exc.codes)
                 raise (StaleCommandError(codes) if exc.stale else CommandRejectedError(codes)) from None
-            except PipelineNotFoundError as exc:
+            except CommercialError as exc:
+                blocks = tuple(BlockCode(code) for code in exc.codes)
+                raise (StaleCommandError(blocks) if exc.stale else CommandRejectedError(blocks)) from None
+            except (PipelineNotFoundError, CommercialNotFoundError) as exc:
                 raise OperatorNotFoundError(str(exc)) from None
             outcome = CommandOutcome(
                 command_id=command.command_id,
@@ -821,6 +927,7 @@ class OperatorService:
         after, stop = pipeline_lifecycle.disqualify(
             uow, self._pipeline.profile, lead, reason=command.reason, operator_id=operator_id,
             command_id=command.command_id, correlation_id=command.correlation_id, now=now)
+        commercial_lifecycle.close_for_lead(uow, after, correlation_id=command.correlation_id, now=now)
         return self._closed_applied(lead, after, stop, command.reason.value, command.note)
 
     def _create_opportunity(self, uow: UnitOfWork, command: CreateOpportunity, now: datetime, operator_id: str) -> _Applied:
@@ -850,6 +957,7 @@ class OperatorService:
             uow, lead, opportunity_id=command.opportunity_id,
             expected_opportunity_version=command.expected_opportunity_version, operator_id=operator_id,
             command_id=command.command_id, correlation_id=command.correlation_id, now=now)
+        commercial_lifecycle.close_for_lead(uow, after, correlation_id=command.correlation_id, now=now)
         applied = self._closed_applied(lead, after, stop, "WON", command.note)
         applied.subjects.append(ref(RefKind.OPPORTUNITY, command.opportunity_id))
         return applied
@@ -859,6 +967,7 @@ class OperatorService:
         after, stop = pipeline_lifecycle.mark_lost(
             uow, lead, reason=command.reason, operator_id=operator_id, command_id=command.command_id,
             correlation_id=command.correlation_id, now=now)
+        commercial_lifecycle.close_for_lead(uow, after, correlation_id=command.correlation_id, now=now)
         return self._closed_applied(lead, after, stop, command.reason.value, command.note)
 
     def _reopen(self, uow: UnitOfWork, command: ReopenLead, now: datetime, operator_id: str) -> _Applied:
@@ -874,6 +983,133 @@ class OperatorService:
         applied = self._lead_applied(before, after, after.close_reason.value if after.close_reason else "CLOSED",
                                      note=note, reason_codes=(reason, *(f"CANCELLED:{i}" for i in stop.cancelled_outbound_ids)))
         applied.subjects += [ref(RefKind.OUTBOUND_MESSAGE, i) for i in stop.cancelled_outbound_ids]
+        return applied
+
+    # ---- Commercial handlers (Stage 13) ---------------------------------------------------
+
+    @staticmethod
+    def _revision_applied(revision_id: str, expected: int, resulting: int, disposition: str, *,
+                          note: str | None = None) -> _Applied:
+        applied = _Applied(disposition=disposition, note=note)
+        applied.changed(ref(RefKind.PROPOSAL_REVISION, revision_id), expected, "revision", {"version": expected},
+                        resulting=resulting)
+        return applied
+
+    def _set_commercial_term(self, uow: UnitOfWork, command: SetCommercialTerm, now: datetime, operator_id: str) -> _Applied:
+        context = load_opportunity(uow, command.opportunity_id)
+        require_active(uow, context, now)
+        provenance = ValueSource(source=TermSource.OPERATOR, operator_id=operator_id, command_id=command.command_id,
+                                 recorded_at=now)
+        term = commercial_terms.set_term(uow, self._commercial.profile, context, term_type=command.term_type,
+                                         term_key=command.term_key, value=command.value,
+                                         expected_version=command.expected_term_version, provenance=provenance,
+                                         correlation_id=command.correlation_id, now=now)
+        applied = _Applied(disposition=term.value.display(), reason_codes=(command.term_type.value,))
+        applied.subjects += [ref(RefKind.COMMERCIAL_TERM, term.term_row_id), ref(RefKind.OPPORTUNITY, command.opportunity_id)]
+        return applied
+
+    def _approve_term_request(self, uow: UnitOfWork, command: ApproveTermRequest, now: datetime, operator_id: str) -> _Applied:
+        request, term = commercial_terms.approve_request(
+            uow, self._commercial.profile, request_id=command.request_id, expected_version=command.expected_request_version,
+            expected_term_version=command.expected_term_version, operator_id=operator_id, command_id=command.command_id, correlation_id=command.correlation_id, now=now)
+        applied = _Applied(disposition=request.status.value, reason_codes=(request.term_type.value,))
+        applied.changed(ref(RefKind.TERM_REQUEST, request.request_id), command.expected_request_version, "request",
+                        {"status": "OPEN"}, resulting=request.version)
+        applied.subjects.append(ref(RefKind.COMMERCIAL_TERM, term.term_row_id))
+        return applied
+
+    def _reject_term_request(self, uow: UnitOfWork, command: RejectTermRequest, now: datetime, operator_id: str) -> _Applied:
+        request = commercial_terms.reject_request(uow, request_id=command.request_id, expected_version=command.expected_request_version,
+                                                  reason=command.reason, operator_id=operator_id,
+                                                  correlation_id=command.correlation_id, now=now)
+        applied = _Applied(disposition=request.status.value, note=command.reason)
+        applied.changed(ref(RefKind.TERM_REQUEST, request.request_id), command.expected_request_version, "request",
+                        {"status": "OPEN"}, resulting=request.version)
+        return applied
+
+    def _create_proposal(self, uow: UnitOfWork, command: CreateProposal, now: datetime, operator_id: str) -> _Applied:
+        revision = commercial_proposals.create(
+            uow, self._commercial, opportunity_id=command.opportunity_id,
+            expected_opportunity_version=command.expected_opportunity_version, currency=command.currency,
+            operator_id=operator_id, command_id=command.command_id, correlation_id=command.correlation_id, now=now)
+        applied = _Applied(disposition=revision.status.value)
+        applied.subjects += [ref(RefKind.PROPOSAL_REVISION, revision.revision_id), ref(RefKind.OPPORTUNITY, command.opportunity_id)]
+        return applied
+
+    def _update_proposal(self, uow: UnitOfWork, command: UpdateProposal, now: datetime, operator_id: str) -> _Applied:
+        revision = commercial_proposals.update_draft(
+            uow, self._commercial, self._catalog, revision_id=command.revision_id,
+            expected_version=command.expected_revision_version,
+            lines=tuple(LineInput(line_id=line.line_id, item_ref=line.item_ref, quantity=line.quantity, unit=line.unit,
+                                  description=line.description, unit_price=line.unit_price,
+                                  discount_percent=line.discount_percent) for line in command.lines),
+            term_overrides=tuple(TermInput(term_type=t.term_type, term_key=t.term_key, value=t.value) for t in command.term_overrides),
+            assumptions=command.assumptions, exclusions=command.exclusions, next_step=command.next_step,
+            operator_id=operator_id, command_id=command.command_id, correlation_id=command.correlation_id, now=now)
+        return self._revision_applied(revision.revision_id, command.expected_revision_version, revision.version, "UPDATED")
+
+    def _approve_proposal(self, uow: UnitOfWork, command: ApproveProposal, now: datetime, operator_id: str) -> _Applied:
+        revision = commercial_proposals.approve(uow, self._commercial, revision_id=command.revision_id,
+                                                expected_version=command.expected_revision_version, operator_id=operator_id,
+                                                correlation_id=command.correlation_id, now=now)
+        return self._revision_applied(revision.revision_id, command.expected_revision_version, revision.version,
+                                      revision.status.value)
+
+    def _revise_proposal(self, uow: UnitOfWork, command: ReviseProposal, now: datetime, operator_id: str) -> _Applied:
+        successor = commercial_proposals.revise(uow, revision_id=command.revision_id,
+                                                expected_version=command.expected_revision_version, operator_id=operator_id,
+                                                correlation_id=command.correlation_id, now=now)
+        applied = _Applied(disposition=f"REVISION_{successor.revision}")
+        applied.subjects += [ref(RefKind.PROPOSAL_REVISION, command.revision_id), ref(RefKind.PROPOSAL_REVISION, successor.revision_id)]
+        return applied
+
+    def _withdraw_proposal(self, uow: UnitOfWork, command: WithdrawProposal, now: datetime, operator_id: str) -> _Applied:
+        revision = commercial_proposals.withdraw(uow, revision_id=command.revision_id,
+                                                 expected_version=command.expected_revision_version, reason=command.reason,
+                                                 operator_id=operator_id, correlation_id=command.correlation_id, now=now)
+        return self._revision_applied(revision.revision_id, command.expected_revision_version, revision.version,
+                                      revision.status.value, note=command.reason)
+
+    def _mark_proposal_presented(self, uow: UnitOfWork, command: MarkProposalPresented, now: datetime, operator_id: str) -> _Applied:
+        revision = commercial_proposals.present(uow, self._commercial, revision_id=command.revision_id,
+                                                expected_version=command.expected_revision_version, operator_id=operator_id,
+                                                correlation_id=command.correlation_id, now=now)
+        return self._revision_applied(revision.revision_id, command.expected_revision_version, revision.version,
+                                      revision.status.value)
+
+    def _mark_proposal_accepted(self, uow: UnitOfWork, command: MarkProposalAccepted, now: datetime, operator_id: str) -> _Applied:
+        revision = commercial_proposals.decide(uow, revision_id=command.revision_id,
+                                               expected_version=command.expected_revision_version, accepted=True,
+                                               reason=command.note, operator_id=operator_id,
+                                               correlation_id=command.correlation_id, now=now)
+        return self._revision_applied(revision.revision_id, command.expected_revision_version, revision.version,
+                                      revision.status.value, note=command.note)
+
+    def _mark_proposal_declined(self, uow: UnitOfWork, command: MarkProposalDeclined, now: datetime, operator_id: str) -> _Applied:
+        revision = commercial_proposals.decide(uow, revision_id=command.revision_id,
+                                               expected_version=command.expected_revision_version, accepted=False,
+                                               reason=command.reason, operator_id=operator_id,
+                                               correlation_id=command.correlation_id, now=now)
+        return self._revision_applied(revision.revision_id, command.expected_revision_version, revision.version,
+                                      revision.status.value, note=command.reason)
+
+    def _update_objection(self, uow: UnitOfWork, command: UpdateObjection, now: datetime, operator_id: str) -> _Applied:
+        objection = commercial_negotiation.update_objection(
+            uow, objection_id=command.objection_id, expected_version=command.expected_objection_version,
+            status=command.status, resolution=command.resolution, operator_id=operator_id,
+            correlation_id=command.correlation_id, now=now)
+        applied = _Applied(disposition=objection.status.value, note=command.resolution)
+        applied.changed(ref(RefKind.OBJECTION, objection.objection_id), command.expected_objection_version, "objection",
+                        {"status": "OPEN"}, resulting=objection.version)
+        return applied
+
+    def _dismiss_commercial_signal(self, uow: UnitOfWork, command: DismissCommercialSignal, now: datetime, operator_id: str) -> _Applied:
+        signal = commercial_negotiation.dismiss_signal(uow, signal_id=command.signal_id,
+                                                       expected_version=command.expected_signal_version,
+                                                       operator_id=operator_id, correlation_id=command.correlation_id, now=now)
+        applied = _Applied(disposition=signal.status.value)
+        applied.changed(ref(RefKind.COMMERCIAL_SIGNAL, signal.signal_id), command.expected_signal_version, "signal",
+                        {"status": "OPEN"}, resulting=signal.version)
         return applied
 
     @staticmethod

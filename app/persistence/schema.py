@@ -437,3 +437,71 @@ V8_SALES_PIPELINE_SCHEMA: tuple[str, ...] = (
     "CREATE INDEX leads_stage_idx ON leads (stage, updated_at)",
     "CREATE INDEX audit_events_type_idx ON audit_events (event_type, occurred_at)",
 )
+
+# v9: commercial decisioning. Proposal revisions (one proposal per opportunity; at most one
+# open revision per proposal; revision numbers unique and positive; frozen totals never
+# negative), approved opportunity-specific terms (one per opportunity/type/key), customer
+# term requests, objections and acceptance/decline signals. No message bodies.
+V9_COMMERCIAL_SCHEMA: tuple[str, ...] = (
+    f"""CREATE TABLE proposal_revisions (
+        revision_id TEXT PRIMARY KEY,
+        proposal_id TEXT NOT NULL,
+        opportunity_id TEXT NOT NULL REFERENCES opportunities (opportunity_id),
+        lead_id TEXT NOT NULL REFERENCES leads (lead_id),
+        revision INTEGER NOT NULL CHECK (revision > 0),
+        status TEXT NOT NULL CHECK (status IN ('DRAFT', 'APPROVED', 'PRESENTED', 'ACCEPTED', 'DECLINED',
+            'WITHDRAWN', 'SUPERSEDED', 'CLOSED')),
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA},
+        CHECK (json_extract(data, '$.totals') IS NULL
+               OR CAST(json_extract(data, '$.totals.total.amount') AS REAL) >= 0),
+        UNIQUE (proposal_id, revision)
+    ) STRICT""",
+    """CREATE UNIQUE INDEX proposal_revisions_one_open_per_proposal
+        ON proposal_revisions (proposal_id) WHERE status IN ('DRAFT', 'APPROVED', 'PRESENTED')""",
+    "CREATE INDEX proposal_revisions_opportunity_idx ON proposal_revisions (opportunity_id, revision)",
+    "CREATE INDEX proposal_revisions_status_idx ON proposal_revisions (status, updated_at)",
+    f"""CREATE TABLE commercial_terms (
+        term_row_id TEXT PRIMARY KEY,
+        opportunity_id TEXT NOT NULL REFERENCES opportunities (opportunity_id),
+        term_type TEXT NOT NULL,
+        term_key TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA},
+        UNIQUE (opportunity_id, term_type, term_key)
+    ) STRICT""",
+    f"""CREATE TABLE commercial_term_requests (
+        request_id TEXT PRIMARY KEY,
+        opportunity_id TEXT NOT NULL REFERENCES opportunities (opportunity_id),
+        term_type TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('REQUESTED', 'UNDER_REVIEW', 'APPROVED', 'REJECTED', 'SUPERSEDED',
+            'CANCELLED')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA}
+    ) STRICT""",
+    "CREATE INDEX commercial_term_requests_opportunity_idx ON commercial_term_requests (opportunity_id, status)",
+    "CREATE INDEX commercial_term_requests_status_idx ON commercial_term_requests (status, created_at)",
+    f"""CREATE TABLE objections (
+        objection_id TEXT PRIMARY KEY,
+        opportunity_id TEXT NOT NULL REFERENCES opportunities (opportunity_id),
+        category TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'WITHDRAWN')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA}
+    ) STRICT""",
+    "CREATE INDEX objections_opportunity_idx ON objections (opportunity_id, status)",
+    "CREATE INDEX objections_status_idx ON objections (status, created_at)",
+    f"""CREATE TABLE commercial_signals (
+        signal_id TEXT PRIMARY KEY,
+        opportunity_id TEXT NOT NULL REFERENCES opportunities (opportunity_id),
+        kind TEXT NOT NULL CHECK (kind IN ('ACCEPTANCE', 'DECLINE')),
+        status TEXT NOT NULL CHECK (status IN ('OPEN', 'CONFIRMED', 'DISMISSED', 'SUPERSEDED', 'CANCELLED')),
+        message_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA}
+    ) STRICT""",
+    "CREATE INDEX commercial_signals_opportunity_idx ON commercial_signals (opportunity_id, status)",
+    "CREATE INDEX commercial_signals_status_idx ON commercial_signals (status, message_at)",
+)

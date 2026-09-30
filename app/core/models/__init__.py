@@ -10,6 +10,23 @@ from app.core.models.campaign_member import (
     CampaignMember,
 )
 from app.core.models.classification import IntentClassification
+from app.core.models.commercial import (
+    OPEN_OBJECTION_STATUSES,
+    OPEN_REQUEST_STATUSES,
+    OPEN_REVISION_STATUSES,
+    AppliedTerm,
+    CommercialSignal,
+    CommercialTerm,
+    CommercialValue,
+    LineTotal,
+    Money,
+    Objection,
+    ProposalLine,
+    ProposalRevision,
+    ProposalTotals,
+    TermRequest,
+    ValueSource,
+)
 from app.core.models.conversation import (
     OPEN_FOLLOW_UP_JOB_STATUSES,
     TERMINAL_CONVERSATION_STATUSES,
@@ -46,6 +63,21 @@ from app.core.models.prospect import ProspectCompany, ProspectContact
 from app.core.models.refs import Actor, EntityRef
 
 __all__ = [
+    "OPEN_OBJECTION_STATUSES",
+    "OPEN_REQUEST_STATUSES",
+    "OPEN_REVISION_STATUSES",
+    "AppliedTerm",
+    "CommercialSignal",
+    "CommercialTerm",
+    "CommercialValue",
+    "LineTotal",
+    "Money",
+    "Objection",
+    "ProposalLine",
+    "ProposalRevision",
+    "ProposalTotals",
+    "TermRequest",
+    "ValueSource",
     "ACTIVE_OPPORTUNITY_STATUSES",
     "FactEvidence",
     "LeadQualification",
