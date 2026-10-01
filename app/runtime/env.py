@@ -8,28 +8,35 @@ Rules:
 - Error messages name the variable and the problem, never the value (values may be
   secrets). Unknown ``SALES_AGENT_*`` variables are rejected, so a typo cannot silently
   leave a limit at an unintended value.
+- Provider variables (``app.integrations``) are optional: a provider's settings and
+  secrets are required only when it is selected, and rejected when it is not. A provider
+  configuration that is INVALID fails loading; NOT_IMPLEMENTED does not (it only leaves the
+  capability unavailable; PRODUCTION mode refuses it at startup).
+- The environment is the only source (no ``.env`` file is read, no config file, no CLI
+  override): explicit environment values over the documented defaults.
 """
 
 from collections.abc import Callable, Mapping
 from datetime import datetime, time, timedelta
 from pathlib import Path
 
-from pydantic import SecretStr, ValidationError
+from pydantic import ValidationError
 
+from app.integrations import INTEGRATION_VARIABLES, IntegrationStatus, evaluate, parse_integrations
 from app.llm import SenderIdentity
 from app.persistence import MEMORY
 from app.policy import GlobalDailyLimits, KillSwitchState, LimitPolicy, SendingWindow, Weekday
-from app.runtime.config import ProviderSecrets, RuntimeConfig, RuntimeMode, WorkerSettings
+from app.runtime.config import RuntimeConfig, RuntimeMode, WorkerSettings
 from app.runtime.errors import ConfigError
 
 PREFIX = "SALES_AGENT_"
-SECRET_VARS = frozenset({"EMAIL_API_TOKEN", "LLM_API_KEY", "TELEGRAM_BOT_TOKEN"})
 REQUIRED = (
     "MODE", "DATABASE_PATH", "SENDER_NAME", "COMPANY_NAME", "MAILBOXES", "TIMEZONE", "WINDOW_DAYS",
     "WINDOW_START", "WINDOW_END", "MAX_SENDS_PER_DAY", "MAX_NEW_CONTACTS_PER_DAY", "MAX_FOLLOW_UPS_PER_DAY",
     "MAX_FOLLOW_UPS_PER_CONTACT", "MIN_FOLLOW_UP_INTERVAL_HOURS", "KILL_SWITCH", "OPERATOR_IDS",
 )
-OPTIONAL = ("APP_ID", "CODE_VERSION", "KILL_SWITCH_REASON", "WORKER_ID", "BATCH_LIMIT", "POLICY_VERSION", *SECRET_VARS)
+OPTIONAL = ("APP_ID", "CODE_VERSION", "KILL_SWITCH_REASON", "WORKER_ID", "BATCH_LIMIT", "POLICY_VERSION",
+            *sorted(INTEGRATION_VARIABLES))
 _DAYS = {"MON": Weekday.MONDAY, "TUE": Weekday.TUESDAY, "WED": Weekday.WEDNESDAY, "THU": Weekday.THURSDAY,
          "FRI": Weekday.FRIDAY, "SAT": Weekday.SATURDAY, "SUN": Weekday.SUNDAY}
 
@@ -69,6 +76,9 @@ def load_config(environ: Mapping[str, str], *, now: datetime) -> RuntimeConfig:
         worker_id=values.get("WORKER_ID", "").strip() or "local-worker",
         batch_limit=parser.integer("BATCH_LIMIT", minimum=1) if values.get("BATCH_LIMIT", "").strip() else 25,
     ))
+    parsed = parse_integrations(values)
+    integrations = evaluate(parsed.config, parsed.secrets, mailboxes=_items(values["MAILBOXES"]), extra=parsed.problems)
+    parser.errors += [problem for status in integrations.providers for problem in status.problems]
     if parser.errors or limits is None or window is None or worker is None:
         raise ConfigError(tuple(parser.errors))
     fields: dict[str, object] = {
@@ -76,7 +86,7 @@ def load_config(environ: Mapping[str, str], *, now: datetime) -> RuntimeConfig:
         "sender": {"sender_name": values["SENDER_NAME"].strip(), "company_name": values["COMPANY_NAME"].strip()},
         "mailboxes": _items(values["MAILBOXES"]), "operator_ids": _items(values["OPERATOR_IDS"]),
         "kill_switch": {"enabled": kill_switch_on, "reason": reason, "changed_at": now, "changed_by": "environment"},
-        "secrets": ProviderSecrets(**{name.lower(): SecretStr(values[name]) for name in SECRET_VARS if values.get(name)}),
+        "integrations": parsed.config, "secrets": parsed.secrets,
     }
     for name in ("APP_ID", "CODE_VERSION"):
         if values.get(name, "").strip():
@@ -98,7 +108,7 @@ class _Parser:
     def mode(self) -> RuntimeMode:
         raw = self.values["MODE"].strip().upper()
         if raw not in RuntimeMode.__members__:
-            self.fail("MODE", "must be 'local' or 'test' (no production mode exists before live integrations)")
+            self.fail("MODE", "must be 'local', 'test' or 'production'")
             return RuntimeMode.LOCAL
         return RuntimeMode(raw)
 
@@ -161,3 +171,12 @@ def _items(raw: str) -> tuple[str, ...]:
 def _describe(exc: ValidationError) -> tuple[str, ...]:
     """Location and message only: pydantic's own text includes the input value."""
     return tuple(f"{'.'.join(str(p) for p in error['loc']) or 'config'}: {error['msg']}" for error in exc.errors())
+
+
+def inspect_integrations(environ: Mapping[str, str]) -> IntegrationStatus:
+    """The provider configuration health of an environment, even when the rest of the
+    configuration is incomplete (for ``provider-status``). Sanitized; no I/O beyond local
+    file metadata."""
+    values = {key[len(PREFIX):]: value for key, value in environ.items() if key.startswith(PREFIX)}
+    parsed = parse_integrations(values)
+    return evaluate(parsed.config, parsed.secrets, mailboxes=_items(values.get("MAILBOXES", "")), extra=parsed.problems)

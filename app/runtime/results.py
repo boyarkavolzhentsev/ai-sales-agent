@@ -5,6 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from app.core.models.base import CoreModel
+from app.integrations import IntegrationStatus
 
 
 class RuntimeState(StrEnum):
@@ -108,6 +109,7 @@ class StartupReport(CoreModel):
     schema_version: int
     recovery: RecoveryReport
     capabilities: CapabilityReport
+    integrations: IntegrationStatus  # configuration health only; sanitized
 
 
 class HealthReport(CoreModel):
@@ -118,4 +120,6 @@ class HealthReport(CoreModel):
     latest_schema_version: int
     ready: bool
     capabilities: CapabilityReport
+    # Provider configuration health (no connectivity check); None until startup evaluated it.
+    integrations: IntegrationStatus | None = None
     problems: tuple[str, ...] = ()

@@ -3,19 +3,51 @@
 venv/
 __pycache__/
 *.py[cod]
+*.egg-info/
+build/
+dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Environment / secrets
 .env
 .env.*
 !.env.example
 
-# Runtime data and logs
+# Local-only credentials and secrets (see docs/integrations.md). Nothing in here is ever
+# committed: OAuth client files, provider tokens, keys.
+.local/
+
+# Credential files wherever they end up
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.jks
+client_secret*.json
+credentials*.json
+service-account*.json
+service_account*.json
+*-credentials.json
+token*.json
+*.token
+*.secret
+
+# Runtime data, local databases and logs
 data/
 logs/
 *.log
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
 
 # OS / editor
 .DS_Store

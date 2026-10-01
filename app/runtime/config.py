@@ -3,15 +3,16 @@
 Shared values (sender identity, mailboxes, limits, sending window, kill switch) are held
 once and the existing per-subsystem configuration contracts are built from them, so the
 subsystems can never disagree. Only the few per-subsystem tunables live in their own small
-sections. Provider credentials are optional placeholders for the future integration
-stage; nothing in Stage 11 needs or uses them, and they are never shown in reprs.
+sections. Provider selection and non-secret provider settings live in ``integrations``;
+provider secrets live apart in ``secrets`` (``SecretStr`` only, never shown in reprs,
+dumps or errors). See ``app.integrations``.
 """
 
 from datetime import timedelta
 from enum import StrEnum
 from typing import Annotated, Self
 
-from pydantic import AfterValidator, Field, SecretStr, model_validator
+from pydantic import AfterValidator, Field, model_validator
 
 from app.campaign import CampaignExecutionConfig
 from app.conversation import FollowUpConfig
@@ -20,6 +21,7 @@ from app.core.models.types import EmailAddress, NonEmptyStr
 from app.core.validation import unique_items
 from app.dispatch import DispatchConfig
 from app.inbound import InboundConfig
+from app.integrations import IntegrationConfig, ProviderSecrets
 from app.llm import SenderIdentity
 from app.operator import OperatorConfig
 from app.commercial import CommercialConfig
@@ -29,11 +31,14 @@ from app.policy import KillSwitchState, LimitPolicy, SendingWindow
 
 
 class RuntimeMode(StrEnum):
-    """LOCAL: a file database for local runs. TEST: may use an in-memory database.
-    A production mode does not exist before live integrations are built."""
+    """LOCAL (development): a file database for local runs; selected providers that are
+    not implemented simply leave their capability unavailable. TEST: may use an in-memory
+    database. PRODUCTION: refuses to start unless every required provider category is
+    valid and implemented (none is yet), so it fails closed until live integrations exist."""
 
     LOCAL = "LOCAL"
     TEST = "TEST"
+    PRODUCTION = "PRODUCTION"
 
 
 class DispatchSettings(CoreModel):
@@ -62,14 +67,6 @@ class WorkerSettings(CoreModel):
     batch_limit: Annotated[int, Field(ge=1, le=500)] = 25
 
 
-class ProviderSecrets(CoreModel):
-    """Placeholders for future live providers. Optional, unused in Stage 11, never printed."""
-
-    email_api_token: SecretStr | None = None
-    llm_api_key: SecretStr | None = None
-    telegram_bot_token: SecretStr | None = None
-
-
 class RuntimeConfig(CoreModel):
     mode: RuntimeMode
     # Logging-safe identity of this application instance.
@@ -87,6 +84,7 @@ class RuntimeConfig(CoreModel):
     follow_up: FollowUpSettings = FollowUpSettings()
     campaign: CampaignSettings = CampaignSettings()
     worker: WorkerSettings = WorkerSettings()
+    integrations: IntegrationConfig = IntegrationConfig()
     secrets: ProviderSecrets = ProviderSecrets()
     pipeline: PipelineConfig = PipelineConfig()
     commercial: CommercialConfig = CommercialConfig()

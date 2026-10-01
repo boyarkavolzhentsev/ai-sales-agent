@@ -7,6 +7,7 @@ from pydantic import SecretStr, ValidationError
 
 from app.persistence import MEMORY
 from app.policy import Weekday
+from app.integrations import LLMSecrets
 from app.runtime import ConfigError, ProviderSecrets, RuntimeMode, load_config
 from tests.inbound.builders import NOW
 from tests.runtime.builders import env, runtime_config
@@ -40,7 +41,7 @@ def test_every_required_value_must_be_present(tmp_path: Path, missing: str) -> N
     ("name", "value"),
     [("KILL_SWITCH", "yes"), ("KILL_SWITCH", "0"), ("MAX_SENDS_PER_DAY", "-1"), ("MAX_SENDS_PER_DAY", "ten"),
      ("BATCH_LIMIT", "0"), ("TIMEZONE", "Mars/Olympus"), ("WINDOW_DAYS", "MON,FUNDAY"), ("WINDOW_START", "9am"),
-     ("MODE", "production"), ("MIN_FOLLOW_UP_INTERVAL_HOURS", "0")],
+     ("MODE", "staging"), ("MIN_FOLLOW_UP_INTERVAL_HOURS", "0")],
 )
 def test_malformed_values_fail_with_the_variable_named(tmp_path: Path, name: str, value: str) -> None:
     with pytest.raises(ConfigError) as error:
@@ -74,14 +75,15 @@ def test_unknown_variables_and_dangerous_database_paths_are_rejected(tmp_path: P
 
 
 def test_secrets_never_appear_in_reprs_or_errors(tmp_path: Path) -> None:
-    config = load_config(env(tmp_path / "db.sqlite3", LLM_API_KEY=SECRET), now=NOW)
-    assert config.secrets.llm_api_key is not None and config.secrets.llm_api_key.get_secret_value() == SECRET
+    selected = {"LLM_PROVIDER": "openai", "LLM_MODEL": "model-x", "LLM_API_KEY": SECRET}
+    config = load_config(env(tmp_path / "db.sqlite3", **selected), now=NOW)
+    assert config.secrets.llm.api_key is not None and config.secrets.llm.api_key.get_secret_value() == SECRET
     for rendering in (repr(config), str(config), config.model_dump_json(), repr(config.secrets)):
         assert SECRET not in rendering
     with pytest.raises(ConfigError) as error:
-        load_config(env(tmp_path / "db.sqlite3", LLM_API_KEY=SECRET, MAX_SENDS_PER_DAY="x"), now=NOW)
+        load_config(env(tmp_path / "db.sqlite3", **selected, MAX_SENDS_PER_DAY="x"), now=NOW)
     assert SECRET not in str(error.value) and SECRET not in repr(error.value)
-    assert "sk-" not in repr(ProviderSecrets(email_api_token=SecretStr(SECRET)))
+    assert "sk-" not in repr(ProviderSecrets(llm=LLMSecrets(api_key=SecretStr(SECRET))))
 
 
 def test_no_provider_credential_is_required(tmp_path: Path) -> None:

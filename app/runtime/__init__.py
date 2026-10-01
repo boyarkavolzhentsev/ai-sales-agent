@@ -8,17 +8,17 @@ this package imports it.
 """
 
 from app.runtime.application import SalesAgentRuntime
+from app.integrations import ProviderSecrets
 from app.runtime.config import (
     CampaignSettings,
     DispatchSettings,
     FollowUpSettings,
-    ProviderSecrets,
     RuntimeConfig,
     RuntimeMode,
     WorkerSettings,
 )
 from app.runtime.container import Adapters, Capabilities, DenyAllAuthenticator, Services, build_services, offline_adapters
-from app.runtime.env import load_config
+from app.runtime.env import inspect_integrations, load_config
 from app.runtime.errors import (
     CapabilityUnavailableError,
     ConfigError,
@@ -69,6 +69,7 @@ __all__ = [
     "StartupReport",
     "WorkResult",
     "WorkerSettings",
+    "inspect_integrations",
     "build_services",
     "load_config",
     "offline_adapters",

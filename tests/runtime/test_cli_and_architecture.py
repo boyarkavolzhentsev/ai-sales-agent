@@ -31,7 +31,7 @@ def run(*argv: str, environ: dict[str, str]) -> tuple[int, dict[str, object]]:
 
 def test_init_then_read_only_health(tmp_path: Path) -> None:
     path = tmp_path / "agent.sqlite3"
-    environ = env(path, LLM_API_KEY=SECRET)
+    environ = env(path, LLM_PROVIDER="openai", LLM_MODEL="model-x", LLM_API_KEY=SECRET)  # selected, not implemented
     code, report = run("health", environ=environ)
     assert (code, report["problem"]) == (UNHEALTHY, "DATABASE_MISSING") and not path.exists()  # health never creates it
     code, report = run("init", environ=environ)
@@ -64,7 +64,8 @@ def test_tick_drafts_but_never_approves_or_fabricates_sends(tmp_path: Path) -> N
 
 
 def test_invalid_configuration_and_usage_fail_without_printing_secrets(tmp_path: Path) -> None:
-    code, report = run("tick", environ=env(tmp_path / "a.sqlite3", LLM_API_KEY=SECRET, KILL_SWITCH="maybe"))
+    code, report = run("tick", environ=env(tmp_path / "a.sqlite3", LLM_PROVIDER="openai", LLM_MODEL="model-x",
+                                           LLM_API_KEY=SECRET, KILL_SWITCH="maybe"))
     assert code == INVALID_CONFIG and report["error"] == "INVALID_CONFIGURATION"
     assert run("reset-database", environ=env(tmp_path / "a.sqlite3"))[0] == INVALID_CONFIG  # no such (destructive) command
     assert not (tmp_path / "a.sqlite3").exists()

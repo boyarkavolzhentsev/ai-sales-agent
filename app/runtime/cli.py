@@ -15,6 +15,9 @@
   execution-metrics read-only: execution metrics over open leads
   execution-pass    one bounded Stage 14 pass: at most one automatic action per lead
                     [--dispatch-approved: may also dispatch operator-approved messages]
+  provider-status   read-only: selected providers, configuration validity, implementation
+                    and capability availability, production readiness. Needs no database,
+                    contacts no provider, never prints a secret value
 
 Every command runs once and exits; there is no loop or daemon. Configuration comes from
 ``SALES_AGENT_*`` environment variables. Output is JSON with IDs, counts and codes only;
@@ -39,7 +42,7 @@ from app.orchestration import ExecutionOutcome, ExecutionPassResult, ExecutionQu
 from app.persistence import MEMORY, SystemClock
 from app.persistence.migrations import current_version, latest_version
 from app.runtime.application import SalesAgentRuntime
-from app.runtime.env import load_config
+from app.runtime.env import inspect_integrations, load_config
 from app.runtime.errors import ConfigError, StartupError
 from app.runtime.results import PhaseStatus, RuntimeTickResult
 
@@ -50,7 +53,7 @@ EXECUTION = ("execution-plan", "execution-queue", "execution-metrics", "executio
 
 def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.runtime", description="AI sales agent one-shot runtime commands")
-    parser.add_argument("command", choices=("init", "health", *TICKS, *EXECUTION))
+    parser.add_argument("command", choices=("init", "health", "provider-status", *TICKS, *EXECUTION))
     parser.add_argument("--dispatch-approved", action="store_true",
                         help="tick / execution-pass only: also dispatch approved messages")
     parser.add_argument("--lead-id", help="execution-plan: the lead to plan")
@@ -61,6 +64,8 @@ def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
     except SystemExit as exc:
         return INVALID_CONFIG if exc.code else OK
     clock = SystemClock()
+    if args.command == "provider-status":
+        return _provider_status(environ, clock, out)
     try:
         config = load_config(environ, now=clock.now())
     except ConfigError as exc:
@@ -120,6 +125,22 @@ def _execution(runtime: SalesAgentRuntime, args: argparse.Namespace, out: TextIO
     result: ExecutionPassResult = runtime.execution_pass(dispatch_approved=args.dispatch_approved)
     _emit(out, result.model_dump(mode="json"))
     return PHASE_ERRORS if result.count(ExecutionOutcome.ERROR) else OK
+
+
+def _provider_status(environ: Mapping[str, str], clock: SystemClock, out: TextIO) -> int:
+    """Configuration health, not connectivity. Problems are variable names and codes."""
+    status = inspect_integrations(environ)
+    problems: tuple[str, ...] = ()
+    mode: str | None = None
+    try:
+        mode = load_config(environ, now=clock.now()).mode.value
+    except ConfigError as exc:
+        problems = exc.problems
+    _emit(out, {"configuration_valid": not problems, "problems": list(problems), "mode": mode,
+                # Whether PRODUCTION mode could start with this configuration (any mode).
+                "production_ready": not problems and status.production_ready,
+                "integrations": status.model_dump(mode="json")})
+    return OK if not problems else INVALID_CONFIG
 
 
 def _health(database_path: str, out: TextIO) -> int:

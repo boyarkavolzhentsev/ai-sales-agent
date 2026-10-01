@@ -24,6 +24,7 @@ from app.campaign import CampaignEnroller, CampaignExecutor, CampaignScheduler
 from app.conversation import FollowUpExecutor, FollowUpScheduler
 from app.dispatch import DispatchReconciler, DispatchService, EmailTransport
 from app.inbound import InboundService
+from app.integrations import build_provider_adapters
 from app.llm import LLMTransport, StructuredLLM
 from app.operator import OperatorAuthenticator, OperatorCredential, OperatorService
 from app.commercial import CommercialExtractor, CommercialService, PriceCatalog
@@ -56,6 +57,16 @@ def offline_adapters() -> Adapters:
     """Nothing external configured: dispatch, reconciliation and inbound analysis are
     unavailable; campaign and follow-up ticks (which only produce drafts) work."""
     return Adapters()
+
+
+def configured_adapters(config: RuntimeConfig) -> Adapters:
+    """The adapters the configured providers provide, through the Stage 15 provider
+    factory. No real provider is implemented yet, so this is the offline set whatever is
+    selected: a configured provider never becomes a capability by itself, and no fake is
+    ever substituted. (Programmatic callers, e.g. tests, may still inject adapters.)"""
+    built = build_provider_adapters(config.integrations, config.secrets)
+    return Adapters(email_transport=built.email_transport, reconciler=built.reconciler, llm_transport=built.llm_transport,
+                    authenticator=built.authenticator or DenyAllAuthenticator())
 
 
 @dataclass(frozen=True)

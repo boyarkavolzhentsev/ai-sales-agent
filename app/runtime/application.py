@@ -1,7 +1,9 @@
 """The application runtime: explicit lifecycle around the composed services.
 
 States: CREATED -> STARTING -> READY -> STOPPING -> STOPPED; any startup failure -> FAILED
-(never READY). Nothing happens at construction; ``start()`` validates, connects,
+(never READY). Nothing happens at construction; ``start()`` validates the provider
+configuration (an INVALID provider fails; PRODUCTION mode also needs every required
+provider implemented, which none is yet, so it fails closed), connects,
 migrates to the latest schema (idempotent; never recreates or clears data), builds the
 services, inspects recovery and only then becomes READY. Ticks and the inbound entry
 point run only while READY, one at a time (no reentrancy); after ``stop()`` begins no new
@@ -30,7 +32,9 @@ from app.persistence import MEMORY, Clock, Database, PersistenceError, SchemaVer
 from app.persistence.migrations import latest_version
 from app.runtime import workers
 from app.runtime.config import RuntimeConfig
-from app.runtime.container import Adapters, Capabilities, Services, build_services, offline_adapters
+from app.integrations import IntegrationStatus, evaluate
+from app.runtime.config import RuntimeMode
+from app.runtime.container import Adapters, Capabilities, Services, build_services, configured_adapters
 from app.runtime.errors import CapabilityUnavailableError, RuntimeBusyError, RuntimeNotReadyError, StartupError
 from app.runtime.recovery import inspect_recovery
 from app.runtime.results import (
@@ -52,7 +56,9 @@ SHUTTING_DOWN = "SHUTTING_DOWN"
 class SalesAgentRuntime:
     def __init__(self, config: RuntimeConfig, *, adapters: Adapters | None = None, clock: Clock | None = None) -> None:
         self._config = config
-        self._adapters = adapters or offline_adapters()
+        # Injected adapters (programmatic composition, tests) take precedence over the
+        # configured providers; neither path performs I/O here.
+        self._adapters = adapters or configured_adapters(config)
         self._clock = clock or SystemClock()
         self._capabilities = Capabilities.of(self._adapters)
         self._db = Database(config.database_path)
@@ -60,6 +66,7 @@ class SalesAgentRuntime:
         self._state = S.CREATED
         self._startup: StartupReport | None = None
         self._busy = False
+        self._integrations: IntegrationStatus | None = None
 
     @property
     def state(self) -> RuntimeState:
@@ -79,6 +86,7 @@ class SalesAgentRuntime:
             raise RuntimeNotReadyError(f"cannot start from {self._state}")
         self._state = S.STARTING
         try:
+            self._check_integrations()
             self._check_database_path()
             self._db.connect()
             version = self._db.initialize_schema(self._clock)
@@ -100,7 +108,9 @@ class SalesAgentRuntime:
             self._fail()
             raise StartupError("STARTUP_FAILED", type(exc).__name__) from exc
         self._services = services
-        self._startup = StartupReport(schema_version=version, recovery=recovery, capabilities=self._capability_report())
+        assert self._integrations is not None
+        self._startup = StartupReport(schema_version=version, recovery=recovery, capabilities=self._capability_report(),
+                                      integrations=self._integrations)
         self._state = S.READY
         return self._startup
 
@@ -136,7 +146,8 @@ class SalesAgentRuntime:
         ready = self._state is S.READY and database_ok and version == latest_version()
         return HealthReport(state=self._state, alive=self._state not in (S.FAILED, S.STOPPED), database_ok=database_ok,
                             schema_version=version, latest_schema_version=latest_version(), ready=ready,
-                            capabilities=self._capability_report(), problems=tuple(problems))
+                            capabilities=self._capability_report(), integrations=self._integrations,
+                            problems=tuple(problems))
 
     # ---- Work ---------------------------------------------------------------------------------
 
@@ -255,6 +266,17 @@ class SalesAgentRuntime:
         if self._state is not S.READY or self._services is None:
             raise RuntimeNotReadyError(f"the runtime is {self._state}, not READY")
         return self._services
+
+    def _check_integrations(self) -> None:
+        """Configuration health only (local checks, no provider contact). Codes and
+        variable names go into the error, never a value."""
+        status = evaluate(self._config.integrations, self._config.secrets, mailboxes=self._config.mailboxes)
+        self._integrations = status
+        if not status.valid:
+            problems = [problem for provider in status.providers for problem in provider.problems]
+            raise StartupError("INTEGRATION_CONFIG_INVALID", "; ".join(problems))
+        if self._config.mode is RuntimeMode.PRODUCTION and not status.production_ready:
+            raise StartupError("PRODUCTION_NOT_READY", ", ".join(status.production_blockers))
 
     def _check_database_path(self) -> None:
         if self._config.database_path == MEMORY:
