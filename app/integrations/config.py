@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import Field, PositiveInt
 
 from app.core.models.base import CoreModel
 from app.core.models.types import EmailAddress, NonEmptyStr
@@ -43,10 +43,20 @@ class LLMProviderConfig(CoreModel):
     timeout_seconds: Annotated[int, Field(ge=1, le=300)] = 30
 
 
+class TelegramOperator(CoreModel):
+    """One authorized operator: the numeric Telegram user id of a private chat (where the
+    chat id equals the user id) and the Stage 7 operator id it acts as."""
+
+    chat_id: PositiveInt
+    operator_id: NonEmptyStr
+
+
 class OperatorChannelConfig(CoreModel):
     provider: OperatorProviderId = OperatorProviderId.NONE
-    # Telegram chats allowed to issue operator commands (negative IDs are group chats).
-    operator_chat_ids: tuple[int, ...] = ()
+    # The only Telegram identities that may act as operators (private chats only).
+    operators: tuple[TelegramOperator, ...] = ()
+    # Bound of every Telegram Bot API call.
+    timeout_seconds: Annotated[int, Field(ge=1, le=60)] = 20
 
 
 class KnowledgeProviderConfig(CoreModel):

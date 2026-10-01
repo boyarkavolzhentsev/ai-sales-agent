@@ -46,10 +46,9 @@ def test_config_load_reports_and_errors_are_clean(tmp_path: Path) -> None:
 
 def test_startup_health_and_failures_are_clean(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG)
-    from tests.gmail.builders import connectors
-    from tests.gmail.fakes import FakeGmailApi
+    from tests.telegram.builders import fake_connectors
     config = load_config(full_env(tmp_path), now=NOW)
-    app = SalesAgentRuntime(config, connectors=connectors(FakeGmailApi()))
+    app = SalesAgentRuntime(config, connectors=fake_connectors())
     report = app.start()
     assert_clean(report.model_dump_json() + app.health().model_dump_json() + repr(app.__dict__))
     app.stop()
@@ -89,9 +88,8 @@ def test_credential_file_contents_are_never_read_or_printed(tmp_path: Path, monk
 
 def test_secrets_never_reach_the_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.runtime import cli
-    from tests.gmail.builders import connectors
-    from tests.gmail.fakes import FakeGmailApi
-    monkeypatch.setattr(cli, "CONNECTORS", connectors(FakeGmailApi()))
+    from tests.telegram.builders import fake_connectors
+    monkeypatch.setattr(cli, "CONNECTORS", fake_connectors())
     environ = full_env(tmp_path)
     assert main(["init"], environ, io.StringIO()) == 0
     assert main(["tick"], environ, io.StringIO()) == 0

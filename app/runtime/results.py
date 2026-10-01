@@ -104,6 +104,7 @@ class CapabilityReport(CoreModel):
     reconciliation: bool
     inbound: bool
     email_sync: bool = False
+    operator_channel: bool = False
 
 
 class StartupReport(CoreModel):

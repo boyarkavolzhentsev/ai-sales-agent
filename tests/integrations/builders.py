@@ -41,7 +41,7 @@ def llm(provider: str = "openai", **overrides: str | None) -> dict[str, str | No
 
 
 def telegram(**overrides: str | None) -> dict[str, str | None]:
-    return {"OPERATOR_PROVIDER": "telegram", "TELEGRAM_BOT_TOKEN": BOT_TOKEN, "TELEGRAM_OPERATOR_CHAT_IDS": "1001,-2002"} | overrides
+    return {"OPERATOR_PROVIDER": "telegram", "TELEGRAM_BOT_TOKEN": BOT_TOKEN, "TELEGRAM_OPERATOR_CHAT_IDS": "1001=op-alice,2002=op-bob"} | overrides
 
 
 def full_env(tmp_path: Path, **overrides: str | None) -> dict[str, str]:

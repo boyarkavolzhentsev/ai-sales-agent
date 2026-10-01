@@ -81,11 +81,12 @@ def test_no_loops_no_operator_decisions_and_no_direct_writes() -> None:
 
 def test_no_schema_migration_and_no_new_dependency() -> None:
     # Stage 14 added no migration (v9 stayed v9); v10 belongs to Stage 16's mailbox sync.
-    assert MIGRATIONS[8].name == "commercial_decisioning" and [m.name for m in MIGRATIONS[9:]] == ["email_provider_sync"]
-    assert latest_version() == len(MIGRATIONS) == 10
+    assert MIGRATIONS[8].name == "commercial_decisioning"
+    assert [m.name for m in MIGRATIONS[9:]] == ["email_provider_sync", "operator_channel_sync"]  # Stages 16 and 17
+    assert latest_version() == len(MIGRATIONS) == 11
     lines = [line.strip() for line in (APP.parent / "requirements.txt").read_text(encoding="utf-8").splitlines()]
     assert [line.split(">")[0].split("<")[0].split("=")[0] for line in lines if line and not line.startswith("#")] == [
-        "pydantic", "tzdata", "PyYAML", "google-auth[requests]", "google-auth-oauthlib"]  # Stage 16: Gmail OAuth only
+        "pydantic", "tzdata", "PyYAML", "google-auth[requests]", "google-auth-oauthlib", "requests"]  # Stages 16-17: Gmail OAuth, Telegram HTTPS
 
 
 def test_importing_the_orchestration_layer_has_no_side_effects() -> None:

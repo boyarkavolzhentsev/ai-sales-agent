@@ -136,4 +136,4 @@ def test_no_float_arithmetic_on_money() -> None:
 def test_no_new_external_dependencies() -> None:
     lines = [line.strip() for line in (APP.parent / "requirements.txt").read_text(encoding="utf-8").splitlines()]
     assert [line.split(">")[0].split("<")[0].split("=")[0] for line in lines if line and not line.startswith("#")] == [
-        "pydantic", "tzdata", "PyYAML", "google-auth[requests]", "google-auth-oauthlib"]  # Stage 16: Gmail OAuth only
+        "pydantic", "tzdata", "PyYAML", "google-auth[requests]", "google-auth-oauthlib", "requests"]  # Stages 16-17: Gmail OAuth, Telegram HTTPS

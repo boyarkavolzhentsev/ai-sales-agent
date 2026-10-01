@@ -16,6 +16,7 @@ boundary; an external scheduler may run one-shot ticks.
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from app.runtime import workers
 from app.runtime.config import RuntimeConfig
 from app.integrations import IntegrationStatus, ProviderConnectors, ProviderState, ProviderUnavailableError, evaluate
 from app.integrations.mailbox import MailboxSyncResult, SyncStatus
+from app.integrations.channel import OperatorSyncResult, OperatorSyncStatus
 from app.runtime.config import RuntimeMode
 from app.runtime.container import Adapters, Capabilities, Services, build_services, configured_adapters, offline_adapters
 from app.runtime.errors import CapabilityUnavailableError, RuntimeBusyError, RuntimeNotReadyError, StartupError
@@ -98,7 +100,7 @@ class SalesAgentRuntime:
             version = self._db.initialize_schema(self._clock)
             if version != latest_version():
                 raise StartupError("SCHEMA_NOT_CURRENT", f"schema {version}, expected {latest_version()}")
-            services = build_services(self._db, self._clock, self._config, self._adapters)
+            services = self._with_operator_channel(build_services(self._db, self._clock, self._config, self._adapters))
             with self._db.transaction() as uow:
                 recovery = inspect_recovery(uow, self._clock.now())
         except StartupError:
@@ -289,7 +291,8 @@ class SalesAgentRuntime:
     def _check_integrations(self) -> None:
         """Configuration health only (local checks, no provider contact). Codes and
         variable names go into the error, never a value."""
-        status = evaluate(self._config.integrations, self._config.secrets, mailboxes=self._config.mailboxes)
+        status = evaluate(self._config.integrations, self._config.secrets, mailboxes=self._config.mailboxes,
+                          operator_ids=self._config.operator_ids)
         self._integrations = status
         if not status.valid:
             problems = [problem for provider in status.providers for problem in provider.problems]
@@ -299,6 +302,39 @@ class SalesAgentRuntime:
             raise StartupError("EMAIL_AUTH_REQUIRED", "run: python -m app.runtime gmail-auth")
         if self._config.mode is RuntimeMode.PRODUCTION and not status.production_ready:
             raise StartupError("PRODUCTION_NOT_READY", ", ".join(status.production_blockers))
+
+    def operator_sync(self, *, limit: int | None = None) -> OperatorSyncResult:
+        """One bounded operator-channel pass (Stage 17): Telegram updates through the Stage 7
+        commands, then new Stage 14 review cards. Runs once and returns; never a loop."""
+        with self._work() as services:
+            if services.operator_channel is None:
+                return OperatorSyncResult(status=OperatorSyncStatus.SKIPPED, reason="OPERATOR_CHANNEL_NOT_CONFIGURED")
+            return services.operator_channel.sync_once(limit=limit or self._config.worker.batch_limit)
+
+    def _with_operator_channel(self, services: Services) -> Services:
+        channel = self._adapters.operator_channel
+        if channel is None:
+            return services
+        from app.integrations.telegram.console import TelegramConsole
+        from app.integrations.telegram.sync import OperatorChannelSync
+        from app.operator.auth import authorize
+
+        config, authenticator = self._config.operator_config(), self._adapters.authenticator
+        console = TelegramConsole(db=self._db, clock=self._clock, api=channel.api, operators=channel.authenticator,
+                                  authorize=lambda credential: authorize(authenticator, config, credential),
+                                  operator_service=services.operator, orchestrator=services.orchestrator,
+                                  status=self._status_text, page_size=10, worker_id=self._config.worker.worker_id)
+        return replace(services, operator_channel=OperatorChannelSync(db=self._db, clock=self._clock, api=channel.api,
+                                                                      console=console, bot=channel.bot))
+
+    def _status_text(self) -> str:
+        """Safe status for an authorized operator: states and capabilities, never secrets."""
+        lines = [f"Runtime: {self._state.value}, mode {self._config.mode.value}"]
+        if self._integrations is not None:
+            lines += [f"{p.category.value}: {p.provider} {p.state.value}" for p in self._integrations.providers]
+        capabilities = self._capability_report()
+        lines.append("Capabilities: " + ", ".join(name for name, on in capabilities.model_dump().items() if on))
+        return "\n".join(lines)
 
     def _build_provider_adapters(self) -> None:
         """Selected providers' adapters (Gmail: token load/refresh, account check). A
@@ -328,7 +364,8 @@ class SalesAgentRuntime:
 
     def _capability_report(self) -> CapabilityReport:
         return CapabilityReport(dispatch=self._capabilities.dispatch, reconciliation=self._capabilities.reconciliation,
-                                inbound=self._capabilities.inbound, email_sync=self._capabilities.email_sync)
+                                inbound=self._capabilities.inbound, email_sync=self._capabilities.email_sync,
+                                operator_channel=self._capabilities.operator_channel)
 
 
 def _process_inbound(services: Services, envelope: InboundEnvelope, correlation_id: str) -> InboundResult:

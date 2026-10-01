@@ -30,7 +30,7 @@ def test_no_provider_variables_keep_the_offline_default(tmp_path: Path) -> None:
 
 def test_every_provider_selected_with_fake_secrets_loads(tmp_path: Path) -> None:
     config = load_config(full_env(tmp_path), now=NOW)
-    assert config.integrations.email.provider.value == "GMAIL" and config.integrations.operator.operator_chat_ids == (1001, -2002)
+    assert config.integrations.email.provider.value == "GMAIL" and [(o.chat_id, o.operator_id) for o in config.integrations.operator.operators] == [(1001, "op-alice"), (2002, "op-bob")]
     assert config.secrets.gmail.client_id is not None and config.secrets.gmail.client_id.get_secret_value() == CLIENT_ID
     assert config.secrets.telegram.bot_token is not None and config.secrets.llm.api_key is not None
 
@@ -62,9 +62,9 @@ def test_production_is_a_mode_and_it_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(StartupError) as error:
         app.start()
     assert error.value.code == "PRODUCTION_NOT_READY" and app.state is RuntimeState.FAILED
-    # Gmail is implemented and (via the refresh secret) authorized since Stage 16; LLM and
-    # Telegram are not, so production still fails closed.
-    assert str(error.value) == "PRODUCTION_NOT_READY: LLM:NOT_IMPLEMENTED, OPERATOR_CHANNEL:NOT_IMPLEMENTED"
+    # Gmail (Stage 16) and Telegram (Stage 17) are implemented; the LLM is not, so
+    # production still fails closed.
+    assert str(error.value) == "PRODUCTION_NOT_READY: LLM:NOT_IMPLEMENTED"
     assert not (tmp_path / "agent.sqlite3").exists()  # refused before touching the database
 
 
@@ -72,14 +72,14 @@ def test_production_is_a_mode_and_it_fails_closed(tmp_path: Path) -> None:
 
 
 def test_selected_but_unimplemented_providers_never_become_capabilities(tmp_path: Path) -> None:
-    from tests.gmail.builders import connectors
-    from tests.gmail.fakes import FakeGmailApi
-    app = SalesAgentRuntime(load_config(full_env(tmp_path), now=NOW), connectors=connectors(FakeGmailApi()))
+    from tests.telegram.builders import fake_connectors
+    app = SalesAgentRuntime(load_config(full_env(tmp_path), now=NOW), connectors=fake_connectors())
     report = app.start()
-    # Gmail (implemented, Stage 16) is a capability; LLM and Telegram stay unavailable.
+    # Gmail (Stage 16) and Telegram (Stage 17) are capabilities; the LLM stays unavailable.
     assert (report.capabilities.dispatch, report.capabilities.reconciliation, report.capabilities.inbound) == (True, True, False)
+    assert report.capabilities.operator_channel
     states = {p.category: p.state for p in report.integrations.providers}
-    assert states == {P.EMAIL: S.CONFIGURED, P.LLM: S.NOT_IMPLEMENTED, P.OPERATOR_CHANNEL: S.NOT_IMPLEMENTED,
+    assert states == {P.EMAIL: S.CONFIGURED, P.LLM: S.NOT_IMPLEMENTED, P.OPERATOR_CHANNEL: S.CONFIGURED,
                       P.KNOWLEDGE: S.CONFIGURED, P.EMBEDDINGS: S.DISABLED}
     assert app.health().integrations == report.integrations and app.health().ready
     assert app.campaign_tick().status.value == "OK"  # the offline runtime works exactly as before
@@ -103,14 +103,15 @@ def test_deployments_are_isolated(tmp_path: Path) -> None:
     b_dir.mkdir()
     a = load_config(env(a_dir / "a.sqlite3", **llm("openai", LLM_API_KEY="test-secret-do-not-use-tenant-a")), now=NOW)
     b = load_config(env(b_dir / "b.sqlite3", **(llm("anthropic", LLM_API_KEY="test-secret-do-not-use-tenant-b")
-                                                 | telegram(TELEGRAM_OPERATOR_CHAT_IDS="77"))), now=NOW)
+                                                 | telegram(TELEGRAM_OPERATOR_CHAT_IDS="77=op-bob"))), now=NOW)
     assert a.integrations != b.integrations and a.integrations.fingerprint() != b.integrations.fingerprint()
     assert a.secrets.llm.api_key is not None and b.secrets.llm.api_key is not None
     assert a.secrets.llm.api_key.get_secret_value() != b.secrets.llm.api_key.get_secret_value()
-    first, second = SalesAgentRuntime(a), SalesAgentRuntime(b)
+    from tests.telegram.builders import fake_connectors
+    first, second = SalesAgentRuntime(a), SalesAgentRuntime(b, connectors=fake_connectors())
     report_a, report_b = first.start(), second.start()
     assert report_a.integrations.of(P.OPERATOR_CHANNEL).state is S.DISABLED
-    assert report_b.integrations.of(P.OPERATOR_CHANNEL).state is S.NOT_IMPLEMENTED
+    assert report_b.integrations.of(P.OPERATOR_CHANNEL).state is S.CONFIGURED
     assert "tenant-b" not in repr(first.__dict__) and "tenant-a" not in repr(second.__dict__)
     first.stop()
     second.stop()

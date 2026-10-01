@@ -20,6 +20,7 @@ around one Database and one Clock.
 """
 
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 from app.campaign import CampaignEnroller, CampaignExecutor, CampaignScheduler
 from app.conversation import FollowUpExecutor, FollowUpScheduler
@@ -54,6 +55,7 @@ class Adapters:
     commercial_extractor: CommercialExtractor | None = None
     price_catalog: PriceCatalog | None = None
     mailbox: MailboxReader | None = None
+    operator_channel: Any = None  # the Telegram adapters (Stage 17)
 
 
 def offline_adapters() -> Adapters:
@@ -69,11 +71,18 @@ def configured_adapters(config: RuntimeConfig, base: Adapters | None = None,
     adapters always replace the injected ones of its category, and a provider without an
     implementation contributes nothing: no fake is ever substituted. Building Gmail
     adapters reads/refreshes the local token and checks the account (ProviderUnavailableError)."""
-    base = base or offline_adapters()
+    adapters = base or offline_adapters()
     built = build_provider_adapters(config.integrations, config.secrets, connectors)
-    if built.email_transport is None:
-        return base
-    return replace(base, email_transport=built.email_transport, reconciler=built.reconciler, mailbox=built.mailbox)
+    if built.email_transport is not None:
+        adapters = replace(adapters, email_transport=built.email_transport, reconciler=built.reconciler, mailbox=built.mailbox)
+    if built.operator_channel is not None:
+        # Telegram credentials are verified by Telegram's authenticator; any other scheme
+        # still goes to the configured one (DenyAll in production, injected in tests).
+        from app.integrations.telegram.auth import SchemeAuthenticator
+
+        adapters = replace(adapters, operator_channel=built.operator_channel,
+                           authenticator=SchemeAuthenticator(built.operator_channel.authenticator, adapters.authenticator))
+    return adapters
 
 
 @dataclass(frozen=True)
@@ -82,6 +91,7 @@ class Capabilities:
     reconciliation: bool
     inbound: bool
     email_sync: bool = False
+    operator_channel: bool = False
 
     @classmethod
     def of(cls, adapters: Adapters) -> "Capabilities":
@@ -91,6 +101,7 @@ class Capabilities:
             reconciliation=adapters.email_transport is not None and adapters.reconciler is not None,
             inbound=adapters.llm_transport is not None,
             email_sync=adapters.mailbox is not None,
+            operator_channel=adapters.operator_channel is not None,
         )
 
 
@@ -108,6 +119,7 @@ class Services:
     commercial: CommercialService
     orchestrator: SalesOrchestrator
     mailbox_sync: MailboxSync | None = None
+    operator_channel: Any = None  # OperatorChannelSync, composed by the runtime (Stage 17)
 
 
 def build_services(db: Database, clock: Clock, config: RuntimeConfig, adapters: Adapters) -> Services:

@@ -99,8 +99,8 @@ def test_only_the_runtime_depends_on_the_integration_layer() -> None:
 
 
 def test_no_schema_change() -> None:
-    # Stage 15 changed no schema; v10 is Stage 16's provider-neutral mailbox sync.
-    assert MIGRATIONS[8].name == "commercial_decisioning" and latest_version() == len(MIGRATIONS) == 10
+    # Stage 15 changed no schema; v10/v11 are Stages 16/17 (mailbox and operator-channel sync).
+    assert MIGRATIONS[8].name == "commercial_decisioning" and latest_version() == len(MIGRATIONS) == 11
 
 
 def test_no_real_secret_shapes_in_tracked_text() -> None:

@@ -29,7 +29,7 @@ from app.integrations.status import CATEGORY_OF_SECTION, SECRET_VARIABLES, VARIA
 SETTING_VARIABLES = frozenset(VARIABLES.values())
 SECRET_NAMES = frozenset(SECRET_VARIABLES.values())
 INTEGRATION_VARIABLES = SETTING_VARIABLES | SECRET_NAMES
-_INTEGERS = frozenset({"GMAIL_POLL_INTERVAL_SECONDS", "GMAIL_TIMEOUT_SECONDS", "LLM_TIMEOUT_SECONDS"})
+_INTEGERS = frozenset({"GMAIL_POLL_INTERVAL_SECONDS", "GMAIL_TIMEOUT_SECONDS", "LLM_TIMEOUT_SECONDS", "TELEGRAM_TIMEOUT_SECONDS"})
 _SECTIONS: dict[str, type[CoreModel]] = {"email": EmailProviderConfig, "llm": LLMProviderConfig,
                                           "operator": OperatorChannelConfig, "knowledge": KnowledgeProviderConfig,
                                           "embeddings": EmbeddingsProviderConfig}
@@ -88,10 +88,11 @@ def _value(variable: str, text: str) -> object | None:
     if variable in _INTEGERS:
         return int(text) if text.isdigit() else None
     if variable == "TELEGRAM_OPERATOR_CHAT_IDS":
-        items = [item.strip() for item in text.split(",") if item.strip()]
-        if not items or not all(item.lstrip("-").isdigit() for item in items):
+        # "<telegram user id>=<operator id>,..." (private chats: the chat id is the user id)
+        pairs = [item.strip().split("=", 1) for item in text.split(",") if item.strip()]
+        if not pairs or not all(len(p) == 2 and p[0].strip().isdigit() and p[1].strip() for p in pairs):
             return None
-        return tuple(int(item) for item in items)
+        return tuple({"chat_id": int(p[0].strip()), "operator_id": p[1].strip()} for p in pairs)
     return text
 
 

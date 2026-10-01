@@ -6,11 +6,12 @@ provider-neutral ``MailboxReader``; later ``LLMTransport`` and ``OperatorAuthent
 It never substitutes a fake: a configured provider is not an implemented one, and a
 provider that cannot be used now (e.g. not authorized) raises ``ProviderUnavailableError``.
 
-Implemented: LOCAL knowledge (the Stage 4 index) and GMAIL email (Stage 16). Gmail code is
-imported only when Gmail is selected, so an offline deployment never loads a Google
-library. Building Gmail adapters reads the local token, refreshes it if needed and makes
-one read (the account profile) to confirm the mailbox; it never starts the interactive
-OAuth flow.
+Implemented: LOCAL knowledge (the Stage 4 index), GMAIL email (Stage 16) and TELEGRAM
+operator channel (Stage 17). Provider code is imported only when that provider is
+selected, so an offline deployment never loads it. Building Gmail adapters reads the local
+token, refreshes it if needed and makes one read (the account profile) to confirm the
+mailbox; it never starts the interactive OAuth flow. Building Telegram adapters makes one
+``getMe`` call to prove the bot token works.
 """
 
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ from typing import Any
 from app.dispatch import DispatchReconciler, EmailTransport
 from app.integrations.config import IntegrationConfig
 from app.integrations.mailbox import MailboxReader
-from app.integrations.providers import EmailProviderId, KnowledgeProviderId, ProviderCategory
+from app.integrations.providers import EmailProviderId, KnowledgeProviderId, OperatorProviderId, ProviderCategory
 from app.integrations.secrets import ProviderSecrets
 from app.llm import LLMTransport
 from app.operator import OperatorAuthenticator
@@ -28,6 +29,7 @@ from app.operator import OperatorAuthenticator
 IMPLEMENTED: frozenset[tuple[ProviderCategory, str]] = frozenset({
     (ProviderCategory.KNOWLEDGE, KnowledgeProviderId.LOCAL.value),
     (ProviderCategory.EMAIL, EmailProviderId.GMAIL.value),
+    (ProviderCategory.OPERATOR_CHANNEL, OperatorProviderId.TELEGRAM.value),
 })
 
 
@@ -47,9 +49,11 @@ class ProviderUnavailableError(Exception):
 @dataclass(frozen=True)
 class ProviderConnectors:
     """Seam beneath the adapters (tests): ``gmail_api(GmailAuth, timeout_seconds)`` returns
-    a ``GmailApi`` instead of the real REST client. None means the real client."""
+    a ``GmailApi``; ``telegram_api(token, timeout_seconds)`` a ``TelegramApi``. None means
+    the real client."""
 
     gmail_api: Any = None
+    telegram_api: Any = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,7 @@ class ProviderAdapters:
     email_transport: EmailTransport | None = None
     reconciler: DispatchReconciler | None = None
     mailbox: MailboxReader | None = None
+    operator_channel: Any = None  # TelegramAdapters (api, bot identity, authenticator)
     llm_transport: LLMTransport | None = None
     authenticator: OperatorAuthenticator | None = None
     # Selected providers whose adapter does not exist yet: (category, provider id).
@@ -76,18 +81,29 @@ def selected(config: IntegrationConfig) -> tuple[tuple[ProviderCategory, str], .
 
 def build_provider_adapters(config: IntegrationConfig, secrets: ProviderSecrets,
                             connectors: ProviderConnectors | None = None) -> ProviderAdapters:
-    """Adapters for the selected providers. Pure (no I/O) unless Gmail is selected."""
+    """Adapters for the selected providers. Pure (no I/O) unless Gmail or Telegram is selected."""
+    connectors = connectors or ProviderConnectors()
     missing = tuple((category, provider) for category, provider in selected(config)
                     if provider != "NONE" and not is_implemented(category, provider))
-    if config.email.provider is not EmailProviderId.GMAIL:
-        return ProviderAdapters(not_implemented=missing)
-    from app.integrations.gmail.errors import GmailError
-    from app.integrations.gmail.provider import build_gmail
+    email: dict[str, Any] = {}
+    if config.email.provider is EmailProviderId.GMAIL:
+        from app.integrations.gmail.errors import GmailError
+        from app.integrations.gmail.provider import build_gmail
 
-    factory = (connectors or ProviderConnectors()).gmail_api
-    try:
-        gmail = build_gmail(config.email, secrets.gmail, **({"api_factory": factory} if factory else {}))
-    except GmailError as exc:
-        raise ProviderUnavailableError(ProviderCategory.EMAIL, exc.code.value) from None
-    return ProviderAdapters(email_transport=gmail.transport, reconciler=gmail.reconciler, mailbox=gmail.reader,
-                            not_implemented=missing)
+        try:
+            gmail = build_gmail(config.email, secrets.gmail,
+                                **({"api_factory": connectors.gmail_api} if connectors.gmail_api else {}))
+        except GmailError as exc:
+            raise ProviderUnavailableError(ProviderCategory.EMAIL, exc.code.value) from None
+        email = {"email_transport": gmail.transport, "reconciler": gmail.reconciler, "mailbox": gmail.reader}
+    channel = None
+    if config.operator.provider is OperatorProviderId.TELEGRAM:
+        from app.integrations.telegram.errors import TelegramError
+        from app.integrations.telegram.provider import build_telegram
+
+        try:
+            channel = build_telegram(config.operator, secrets.telegram,
+                                     **({"api_factory": connectors.telegram_api} if connectors.telegram_api else {}))
+        except TelegramError as exc:
+            raise ProviderUnavailableError(ProviderCategory.OPERATOR_CHANNEL, exc.code.value) from None
+    return ProviderAdapters(**email, operator_channel=channel, not_implemented=missing)

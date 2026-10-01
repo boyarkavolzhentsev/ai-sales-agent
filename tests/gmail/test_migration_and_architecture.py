@@ -36,10 +36,10 @@ def matches(name: str, prefixes: tuple[str, ...]) -> bool:
 def test_a_fresh_database_reaches_v10_with_minimal_sync_tables(tmp_path: Path) -> None:
     path = tmp_path / "fresh.sqlite3"
     with Database(path) as db:
-        assert db.initialize_schema(FrozenClock(NOW)) == latest_version() == 10
+        assert db.initialize_schema(FrozenClock(NOW)) == latest_version() >= 10
     raw = sqlite3.connect(path)
     try:
-        assert current_version(raw) == 10 and MIGRATIONS[-1].name == "email_provider_sync"
+        assert current_version(raw) == latest_version() and MIGRATIONS[9].name == "email_provider_sync"
         columns = {table: [row[1] for row in raw.execute(f"PRAGMA table_info({table})")]
                    for table in ("mailbox_sync_states", "mailbox_sync_failures")}
     finally:
@@ -64,8 +64,8 @@ def test_v1_to_v9_are_unchanged_and_a_v9_database_upgrades_intact(tmp_path: Path
         lead_id = opportunity_lead(db)
         before = (lead(db, lead_id), active_opportunity(db, lead_id))
     with Database(path) as db:
-        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=1))) == 10
-        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=2))) == 10  # idempotent
+        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=1))) == latest_version()
+        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=2))) == latest_version()  # idempotent
         assert (lead(db, lead_id), active_opportunity(db, lead_id)) == before
         with db.transaction() as uow:
             assert uow.mailbox_sync.get_state("gmail", "sales@ourco.example") is None  # nothing backfilled
@@ -84,9 +84,10 @@ def test_only_composition_ever_selects_gmail() -> None:
 
 
 def test_google_code_lives_only_in_the_gmail_package() -> None:
+    telegram = APP / "integrations" / "telegram"  # Stage 17: its Bot API client uses requests (no Google code)
     offenders = [f"{p.relative_to(APP)}: {n}" for p in APP.rglob("*.py") if not p.is_relative_to(GMAIL)
-                 for n in imports(p) if matches(n, ("google", "google_auth_oauthlib", "requests", "oauthlib", "httplib2",
-                                                     "googleapiclient"))]
+                 for n in imports(p) if matches(n, ("google", "google_auth_oauthlib", "oauthlib", "httplib2", "googleapiclient"))
+                 or (matches(n, ("requests",)) and not p.is_relative_to(telegram))]
     assert offenders == []
 
 
@@ -120,4 +121,5 @@ def test_the_gmail_client_has_no_mailbox_side_effects_or_retries() -> None:
 def test_requirements_add_only_the_official_google_auth_libraries() -> None:
     lines = [line.strip() for line in (APP.parent / "requirements.txt").read_text(encoding="utf-8").splitlines()]
     assert [line for line in lines if line and not line.startswith("#")] == [
-        "pydantic>=2,<3", "tzdata>=2024.1", "PyYAML>=6,<7", "google-auth[requests]>=2.40,<3", "google-auth-oauthlib>=1.2,<2"]
+        "pydantic>=2,<3", "tzdata>=2024.1", "PyYAML>=6,<7", "google-auth[requests]>=2.40,<3", "google-auth-oauthlib>=1.2,<2",
+        "requests>=2.31,<3"]  # Stage 17 declares the HTTP stack it imports directly

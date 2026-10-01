@@ -21,6 +21,8 @@
   gmail-auth        the explicit, interactive Gmail authorization (installed-app OAuth in
                     the browser); stores the token file only if the authorized account is
                     the configured GMAIL_ADDRESS. Needs no database. Never runs implicitly
+  operator-sync     one bounded operator-channel pass (Telegram): handle updates through the
+                    Stage 7 commands, then send new review cards. Never a loop or daemon
   email-sync        one bounded inbound mailbox pass (the first pass only sets the cursor)
                     [--recover: explicitly re-establish an expired cursor; mail in the gap
                     is not ingested]
@@ -64,8 +66,8 @@ EXECUTION = ("execution-plan", "execution-queue", "execution-metrics", "executio
 
 def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.runtime", description="AI sales agent one-shot runtime commands")
-    parser.add_argument("command", choices=("init", "health", "provider-status", "gmail-auth", "email-sync", *TICKS,
-                                            *EXECUTION))
+    parser.add_argument("command", choices=("init", "health", "provider-status", "gmail-auth", "email-sync", "operator-sync",
+                                            *TICKS, *EXECUTION))
     parser.add_argument("--recover", action="store_true", help="email-sync only: re-establish an expired cursor")
     parser.add_argument("--dispatch-approved", action="store_true",
                         help="tick / execution-pass only: also dispatch approved messages")
@@ -108,6 +110,10 @@ def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
             return OK
         if args.command in EXECUTION:
             return _execution(runtime, args, out)
+        if args.command == "operator-sync":
+            result = runtime.operator_sync()
+            _emit(out, result.model_dump(mode="json"))
+            return PHASE_ERRORS if result.status.value == "ERROR" else OK
         if args.command == "email-sync":
             synced = runtime.email_sync(recover=args.recover)
             _emit(out, synced.model_dump(mode="json"))

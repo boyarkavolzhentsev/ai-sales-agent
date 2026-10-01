@@ -11,3 +11,7 @@ PyYAML>=6,<7
 # send is never retried behind Stage 8's back.
 google-auth[requests]>=2.40,<3
 google-auth-oauthlib>=1.2,<2
+# Telegram operator channel (Stage 17): the Bot API is called directly over HTTPS with the
+# same HTTP stack (already installed by google-auth[requests]); declared because it is now
+# imported directly. No bot framework, no event loop.
+requests>=2.31,<3

@@ -2,9 +2,9 @@
 
 from datetime import date
 from enum import StrEnum
-from typing import Self
+from typing import Annotated, Self
 
-from pydantic import AwareDatetime, PositiveInt, model_validator
+from pydantic import AwareDatetime, NonNegativeInt, PositiveInt, StringConstraints, model_validator
 
 from app.core.enums import OutboundKind, OutboundStatus
 from app.core.models.base import CoreModel
@@ -200,3 +200,98 @@ class MailboxSyncFailure(CoreModel):
             raise ValueError("resolved_at is required for, and only allowed on, RESOLVED")
         ensure_not_before(self.last_failed_at, self.first_failed_at, "last_failed_at", "first_failed_at")
         return self
+
+
+class OperatorChannelState(CoreModel):
+    """The update cursor of one operator channel account (a Telegram bot). ``cursor`` is
+    the next update offset to read; everything below it was handled. No token."""
+
+    state_id: EntityId
+    provider: NonEmptyStr
+    account: NonEmptyStr  # the bot's numeric id: rotating its token keeps the cursor
+    cursor: NonNegativeInt | None = None
+    last_synced_at: AwareDatetime | None = None
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    version: Version = 1
+
+
+class OperatorChannelFailure(CoreModel):
+    """An update that could not be processed (append-only). The cursor moves past it: an
+    operator action is re-issued by pressing again, never replayed from stored content."""
+
+    failure_id: EntityId
+    provider: NonEmptyStr
+    account: NonEmptyStr
+    update_id: NonNegativeInt
+    update_kind: NonEmptyStr
+    error_code: NonEmptyStr
+    failed_at: AwareDatetime
+
+
+class NotificationStatus(StrEnum):
+    CLAIMED = "CLAIMED"  # a worker holds the lease; nothing submitted yet
+    SUBMITTING = "SUBMITTING"  # committed before calling the provider: the outcome may be unknown
+    SENT = "SENT"
+    FAILED = "FAILED"  # confirmed not delivered: a later pass may claim it again
+    UNKNOWN = "UNKNOWN"  # may have been delivered: never resent automatically
+
+
+class OperatorNotification(CoreModel):
+    """One operator card for one actionable item version and one chat, with its delivery
+    claim. Only the holder of the current ``claim_token`` may move it on; the row is
+    created by the first claim. Delivery: CLAIMED (leased, nothing submitted) ->
+    SUBMITTING (committed before the provider is called) -> SENT, FAILED (confirmed not
+    delivered: may be claimed again) or UNKNOWN (may have been delivered: never resent
+    automatically). An expired CLAIMED lease may be reclaimed; SUBMITTING never is."""
+
+    notification_id: EntityId
+    provider: NonEmptyStr
+    chat_id: int
+    subject_id: EntityId  # the lead
+    action: NonEmptyStr
+    plan_fingerprint: NonEmptyStr
+    status: NotificationStatus
+    claim_token: EntityId
+    claimed_by: NonEmptyStr
+    claim_count: PositiveInt = 1
+    lease_expires_at: AwareDatetime | None = None
+    provider_message_id: int | None = None
+    last_error_code: NonEmptyStr | None = None
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    version: Version = 1
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "OperatorNotification":
+        if (self.status is NotificationStatus.CLAIMED) != (self.lease_expires_at is not None):
+            raise ValueError("lease_expires_at is required for, and only allowed on, CLAIMED")
+        if (self.status is NotificationStatus.SENT) != (self.provider_message_id is not None):
+            raise ValueError("provider_message_id is required for, and only allowed on, SENT")
+        return self
+
+
+class ConfirmationStatus(StrEnum):
+    PENDING = "PENDING"
+    USED = "USED"
+    CANCELLED = "CANCELLED"
+
+
+class OperatorConfirmation(CoreModel):
+    """A pending terminal action (WON, LOST, DNC) awaiting the same operator's explicit
+    confirmation: bound to that operator and chat, the action, the target and the target
+    version seen, and short-lived. Survives restarts; never reusable."""
+
+    confirmation_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{16}$")]
+    provider: NonEmptyStr
+    operator_id: NonEmptyStr
+    chat_id: int
+    action: NonEmptyStr
+    target_id: EntityId
+    target_version: PositiveInt
+    argument: NonEmptyStr | None = None  # e.g. a LostReason value
+    status: ConfirmationStatus = ConfirmationStatus.PENDING
+    created_at: AwareDatetime
+    expires_at: AwareDatetime
+    used_at: AwareDatetime | None = None
+    version: Version = 1

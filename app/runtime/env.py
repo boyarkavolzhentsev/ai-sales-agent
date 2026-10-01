@@ -77,7 +77,8 @@ def load_config(environ: Mapping[str, str], *, now: datetime) -> RuntimeConfig:
         batch_limit=parser.integer("BATCH_LIMIT", minimum=1) if values.get("BATCH_LIMIT", "").strip() else 25,
     ))
     parsed = parse_integrations(values)
-    integrations = evaluate(parsed.config, parsed.secrets, mailboxes=_items(values["MAILBOXES"]), extra=parsed.problems)
+    integrations = evaluate(parsed.config, parsed.secrets, mailboxes=_items(values["MAILBOXES"]),
+                            operator_ids=_items(values["OPERATOR_IDS"]), extra=parsed.problems)
     parser.errors += [problem for status in integrations.providers for problem in status.problems]
     if parser.errors or limits is None or window is None or worker is None:
         raise ConfigError(tuple(parser.errors))
@@ -179,4 +180,5 @@ def inspect_integrations(environ: Mapping[str, str]) -> IntegrationStatus:
     file metadata."""
     values = {key[len(PREFIX):]: value for key, value in environ.items() if key.startswith(PREFIX)}
     parsed = parse_integrations(values)
-    return evaluate(parsed.config, parsed.secrets, mailboxes=_items(values.get("MAILBOXES", "")), extra=parsed.problems)
+    return evaluate(parsed.config, parsed.secrets, mailboxes=_items(values.get("MAILBOXES", "")),
+                    operator_ids=_items(values.get("OPERATOR_IDS", "")), extra=parsed.problems)

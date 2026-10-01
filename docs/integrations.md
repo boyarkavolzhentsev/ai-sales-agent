@@ -1,7 +1,7 @@
 # Integration configuration
 
 Stage 15 added the configuration foundation real providers plug into; Stage 16 added the
-first real provider, **Gmail**. Selecting a provider that is not implemented yet validates
+first real provider, **Gmail**; Stage 17 added **Telegram** as the operator channel. Selecting a provider that is not implemented yet validates
 its configuration and reports `NOT_IMPLEMENTED`; its capability stays unavailable and
 nothing contacts it.
 
@@ -11,7 +11,7 @@ nothing contacts it.
 |---|---|---|---|
 | Email | `SALES_AGENT_EMAIL_PROVIDER` | `NONE`, `GMAIL` | `GMAIL` (Stage 16) |
 | LLM | `SALES_AGENT_LLM_PROVIDER` | `NONE`, `OPENAI`, `ANTHROPIC`, `GEMINI` | none |
-| Operator channel | `SALES_AGENT_OPERATOR_PROVIDER` | `NONE`, `TELEGRAM` | none |
+| Operator channel | `SALES_AGENT_OPERATOR_PROVIDER` | `NONE`, `TELEGRAM` | `TELEGRAM` (Stage 17) |
 | Knowledge | `SALES_AGENT_KNOWLEDGE_PROVIDER` | `LOCAL` | `LOCAL` (the local approved-knowledge index) |
 | Embeddings | `SALES_AGENT_EMBEDDINGS_PROVIDER` | `NONE` | not applicable |
 
@@ -27,7 +27,10 @@ is not selected is rejected with `PROVIDER_NOT_SELECTED`):
 - **OPENAI / ANTHROPIC / GEMINI**: `LLM_MODEL`, the secret `LLM_API_KEY`; optional
   `LLM_TIMEOUT_SECONDS` (1-300, default 30).
 - **TELEGRAM**: the secret `TELEGRAM_BOT_TOKEN` (shape `<digits>:<token>`),
-  `TELEGRAM_OPERATOR_CHAT_IDS` (comma-separated, distinct, non-zero integers).
+  `TELEGRAM_OPERATOR_CHAT_IDS` (comma-separated `<telegram user id>=<operator id>` pairs:
+  private chats only, where the chat id equals the user id; each operator id must be one
+  of `SALES_AGENT_OPERATOR_IDS`; one chat per operator), optional
+  `TELEGRAM_TIMEOUT_SECONDS` (bound of every Bot API call, 1-60, default 20).
 - **LOCAL** knowledge: optional `KNOWLEDGE_DIR` (must be a directory).
 
 All names carry the `SALES_AGENT_` prefix. Unknown `SALES_AGENT_*` variables are rejected.
@@ -75,20 +78,25 @@ without contacting anything:
 - `AUTH_REQUIRED`: valid and implemented, but no usable local authorization (Gmail: no
   token file / refresh secret, or a token without a refresh token or the needed scopes);
   `authorization` says `AUTH_REQUIRED` or `AUTH_INVALID`. Run `gmail-auth`.
-- `CONFIGURED`: valid, implemented and (locally) authorized.
+- `CONFIGURED`: valid, implemented and (locally) authorized. Telegram shows
+  `authorization: TOKEN_PRESENT`: the token is structurally valid but not verified here;
+  the runtime verifies it with one `getMe` at startup, and only then does the runtime's
+  capability report list `operator_channel`.
 
-This is configuration health, not connectivity: the token is not refreshed and Google is
-not contacted. A configuration fingerprint (`cfg-...`) identifies the non-secret provider
+This is configuration health, not connectivity: the token is not refreshed and neither
+Google nor Telegram is contacted. A configuration fingerprint (`cfg-...`) identifies the non-secret provider
 configuration; rotating a secret does not change it.
 
 ## Modes
 
 - `local`, `test`: an `INVALID` provider stops loading/startup; a Gmail selection that is
   `AUTH_REQUIRED` stops startup with `EMAIL_AUTH_REQUIRED` (before the database is
-  touched); `NOT_IMPLEMENTED` only leaves the capability unavailable.
+  touched); a Telegram token that `getMe` refuses stops startup with
+  `OPERATOR_CHANNEL_PROVIDER_UNAVAILABLE`; `NOT_IMPLEMENTED` only leaves the capability
+  unavailable.
 - `production`: startup is refused (`PRODUCTION_NOT_READY`) unless email, LLM, operator
-  channel and knowledge are all `CONFIGURED`. LLM and Telegram are not implemented yet,
-  so production still fails closed.
+  channel and knowledge are all `CONFIGURED`. No LLM provider is implemented yet, so
+  production still fails closed (`PRODUCTION_NOT_READY: LLM:NOT_IMPLEMENTED`).
 
 ## Gmail (Stage 16)
 
@@ -169,6 +177,91 @@ Nothing below runs in the test suite; it touches a real mailbox only when you ru
    for a test recipient you control (Stage 7), then `python -m app.runtime dispatch-tick`
    (or `tick --dispatch-approved`) sends it through Stage 8. There is no command that
    sends arbitrary email, and approval is never bypassed.
+
+## Telegram operator channel (Stage 17)
+
+**What it is.** A human operator interface only. Telegram is never the source of truth:
+leads, qualification, opportunities, proposals, dispatch, do-not-contact, campaigns,
+conversations and WON/LOST all stay in the database and change only through the existing
+Stage 7 operator commands, re-validated by the services that own them. Telegram never
+sends email: an approved draft is sent only by the normal dispatch step (Stage 14/8).
+
+**Bot API.** Direct HTTPS (`requests`), no bot framework, no webhook, no daemon. Only
+`getMe`, `getUpdates`, `sendMessage`, `editMessageText` and `answerCallbackQuery`; one
+request per call, bounded by `TELEGRAM_TIMEOUT_SECONDS`, never retried behind the caller.
+Messages are plain text (no parse mode); customer text is shown as an excerpt marked
+"untrusted", with control/bidi characters removed and long text truncated.
+
+**Who may act.** `TELEGRAM_OPERATOR_CHAT_IDS` maps numeric Telegram user ids to Stage 7
+operator ids (`<user id>=<operator id>`). Only private chats where the chat id is that user's
+id count; every update is then checked against `SALES_AGENT_OPERATOR_IDS` by Stage 7
+itself. Usernames and display names are never used. Anyone else gets "Not authorized."
+and no data; groups and channels get nothing.
+
+**`python -m app.runtime operator-sync`** (one bounded pass, no loop):
+1. reads at most the worker batch limit of updates after the stored cursor (short poll);
+2. handles each in order: text commands `/start`, `/help`, `/status`, `/queue`; button
+   presses become Stage 7 commands; everything else is ignored;
+3. moves the cursor past each update after it was handled. An update that fails is
+   recorded (update id, kind, error code: never its content) and skipped;
+4. sends new review cards from the Stage 14 operator queue (and recovery items that need a
+   human): one card per operator chat and plan version, never repeated; a rate limit ends
+   the pass and the next pass continues.
+Exit code 4 when Telegram could not be read. Run it from a scheduler as often as you like;
+concurrent passes are safe.
+
+**Card delivery** is claimed durably, never by a process-local lock. A pass first claims a
+card (one row per chat, lead, action and plan version, created or taken over by a
+compare-and-set in an IMMEDIATE transaction), then commits `SUBMITTING` before calling
+`sendMessage`, then records `SENT`, `FAILED` or `UNKNOWN`; only the current claim holder
+can move the row. So two passes never both send one card. `FAILED` means Telegram refused
+it or was never reached, and a later pass retries it; a claim abandoned before submission
+is taken over when its 2-minute lease expires. `UNKNOWN` (read timeout, dropped connection,
+5xx, unreadable success) and an abandoned `SUBMITTING` may already have produced the
+card, so they are never resent automatically: no duplicate card, and `/queue` still shows
+the item. A new plan version is a new card.
+
+**Buttons.** Only actions the current plan allows are shown. Callback data holds an action
+code, an opaque id and the version seen (at most 64 bytes, no text or prices). Every press
+re-reads the current state: if it changed, nothing runs ("changed since the card was
+sent"). Each press has a deterministic Stage 7 command id, so a replayed update or a double
+tap never executes twice; a failed Telegram acknowledgement never retries or undoes the
+committed command.
+
+**WON, LOST, do-not-contact** are never one click: the first press creates a confirmation
+bound to the operator, the chat, the lead and the lead version, valid for 5 minutes; only
+that operator confirming it in that chat executes the command. Confirming a customer's
+acceptance is not WON; WON is offered only once Stage 14 plans `MARK_WON`.
+
+**Persistence.** Schema v11 (`operator_channel_sync`): the update cursor (keyed by the
+bot's numeric id), failed-update records, card delivery records (status, claim, Telegram
+message id) and pending confirmations.
+No token, raw update or customer text.
+
+### Setup and a manual live smoke test
+
+Nothing below runs in the test suite; it contacts Telegram only when you run it.
+
+1. Create a bot with @BotFather and keep its token **only** in your environment or in a
+   gitignored file under `.local/` (never in the repository).
+2. Find your numeric Telegram user id (for example from @userinfobot) and start a private
+   chat with your bot (press *Start*).
+3. Set `SALES_AGENT_OPERATOR_PROVIDER=TELEGRAM`, `SALES_AGENT_TELEGRAM_BOT_TOKEN=<token>`,
+   `SALES_AGENT_TELEGRAM_OPERATOR_CHAT_IDS=<your user id>=<an operator id>` (that operator id
+   must be listed in `SALES_AGENT_OPERATOR_IDS`).
+4. `python -m app.runtime provider-status` - OPERATOR_CHANNEL should be `CONFIGURED` (no
+   network call).
+5. `python -m app.runtime init` (runs `getMe` once), then send `/start` to the bot and run
+   `python -m app.runtime operator-sync`: the bot answers "You are authorized...".
+6. Send `/queue` and run `operator-sync` again. With a pending test draft (e.g. after
+   `execution-pass` drafted a campaign touch to a test address you own) a review card
+   arrives; press Approve (or Reject) and run `operator-sync`. Approve records the decision
+   only - the email is sent by `dispatch-tick`/`execution-pass --dispatch-approved`.
+7. Verify the Stage 7 state changed exactly once: `execution-plan --lead-id <lead>` no longer
+   shows the review, and pressing the old button again (then `operator-sync`) answers
+   "Already handled." or "changed since the card was sent" without a second change.
+8. From another Telegram account (or a group) the bot must answer "Not authorized." or
+   nothing at all.
 
 ## Deployments
 

@@ -25,9 +25,10 @@ from tests.integrations.builders import API_KEY, BOT_TOKEN, gmail, llm, telegram
 P, S = ProviderCategory, ProviderState
 
 
-def status_of(values: dict[str, str | None], mailboxes: tuple[str, ...] = (MAILBOX,)):  # noqa: ANN201
+def status_of(values: dict[str, str | None], mailboxes: tuple[str, ...] = (MAILBOX,),  # noqa: ANN201
+              operator_ids: tuple[str, ...] = ()):
     parsed = parse_integrations({k: v for k, v in values.items() if v is not None})
-    return evaluate(parsed.config, parsed.secrets, mailboxes=mailboxes, extra=parsed.problems)
+    return evaluate(parsed.config, parsed.secrets, mailboxes=mailboxes, operator_ids=operator_ids, extra=parsed.problems)
 
 
 def test_no_provider_selected_is_valid_and_needs_nothing() -> None:
@@ -95,15 +96,20 @@ def test_every_llm_provider_is_configured_but_not_implemented(provider: str) -> 
     assert build_provider_adapters(parsed.config, parsed.secrets).llm_transport is None  # no live client
 
 
-def test_telegram_is_validated_structurally_and_not_implemented() -> None:
-    ok = status_of(telegram()).of(P.OPERATOR_CHANNEL)
-    assert (ok.state, ok.capability_available) == (S.NOT_IMPLEMENTED, False)
+def test_telegram_is_validated_structurally() -> None:
+    # Stage 17 implements Telegram: a valid configuration is CONFIGURED (getMe runs at startup).
+    ok = status_of(telegram(), operator_ids=("op-alice", "op-bob")).of(P.OPERATOR_CHANNEL)
+    assert (ok.state, ok.implemented, ok.capability_available, ok.authorization) == (S.CONFIGURED, True, True, "TOKEN_PRESENT")
+    unknown = status_of(telegram(), operator_ids=("op-alice",)).of(P.OPERATOR_CHANNEL)  # op-bob is no Stage 7 operator
+    assert unknown.problems == ("SALES_AGENT_TELEGRAM_OPERATOR_CHAT_IDS: INVALID_PROVIDER_CONFIG",)
     for overrides, problem in [
         ({"TELEGRAM_BOT_TOKEN": None}, "SALES_AGENT_TELEGRAM_BOT_TOKEN: MISSING_SECRET"),
         ({"TELEGRAM_BOT_TOKEN": "not-a-bot-token"}, "SALES_AGENT_TELEGRAM_BOT_TOKEN: INVALID_PROVIDER_CONFIG"),
         ({"TELEGRAM_OPERATOR_CHAT_IDS": None}, "SALES_AGENT_TELEGRAM_OPERATOR_CHAT_IDS: MISSING_SETTING"),
-        ({"TELEGRAM_OPERATOR_CHAT_IDS": "12,abc"}, "SALES_AGENT_TELEGRAM_OPERATOR_CHAT_IDS: INVALID_PROVIDER_CONFIG"),
-        ({"TELEGRAM_OPERATOR_CHAT_IDS": "12,12"}, "SALES_AGENT_TELEGRAM_OPERATOR_CHAT_IDS: INVALID_PROVIDER_CONFIG"),
+        ({"TELEGRAM_OPERATOR_CHAT_IDS": "12=op-alice,abc=op-bob"}, "SALES_AGENT_TELEGRAM_OPERATOR_CHAT_IDS: INVALID_PROVIDER_CONFIG"),
+        ({"TELEGRAM_OPERATOR_CHAT_IDS": "12=op-alice,12=op-bob"}, "SALES_AGENT_TELEGRAM_OPERATOR_CHAT_IDS: INVALID_PROVIDER_CONFIG"),
+        ({"TELEGRAM_OPERATOR_CHAT_IDS": "12"}, "SALES_AGENT_TELEGRAM_OPERATOR_CHAT_IDS: INVALID_PROVIDER_CONFIG"),  # no operator
+        ({"TELEGRAM_OPERATOR_CHAT_IDS": "-12=op-alice"}, "SALES_AGENT_TELEGRAM_OPERATOR_CHAT_IDS: INVALID_PROVIDER_CONFIG"),  # group
     ]:
         status = status_of(telegram(**overrides)).of(P.OPERATOR_CHANNEL)
         assert status.state is S.INVALID and problem in status.problems
@@ -111,7 +117,7 @@ def test_telegram_is_validated_structurally_and_not_implemented() -> None:
 
 
 def test_settings_or_secrets_for_an_unselected_provider_are_rejected(tmp_path: Path) -> None:
-    status = status_of({"LLM_API_KEY": API_KEY, "TELEGRAM_OPERATOR_CHAT_IDS": "5", "GMAIL_ADDRESS": MAILBOX})
+    status = status_of({"LLM_API_KEY": API_KEY, "TELEGRAM_OPERATOR_CHAT_IDS": "5=op-alice", "GMAIL_ADDRESS": MAILBOX})
     assert status.of(P.LLM).problems == ("SALES_AGENT_LLM_API_KEY: PROVIDER_NOT_SELECTED",)
     assert status.of(P.OPERATOR_CHANNEL).problems == ("SALES_AGENT_TELEGRAM_OPERATOR_CHAT_IDS: PROVIDER_NOT_SELECTED",)
     assert status.of(P.EMAIL).problems == ("SALES_AGENT_GMAIL_ADDRESS: PROVIDER_NOT_SELECTED",)

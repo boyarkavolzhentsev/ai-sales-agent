@@ -51,7 +51,8 @@ VARIABLES: dict[tuple[str, str], str] = {
     ("email", "credentials_file"): "GMAIL_CREDENTIALS_FILE", ("email", "token_file"): "GMAIL_TOKEN_FILE",
     ("email", "poll_interval_seconds"): "GMAIL_POLL_INTERVAL_SECONDS", ("email", "timeout_seconds"): "GMAIL_TIMEOUT_SECONDS",
     ("llm", "provider"): "LLM_PROVIDER", ("llm", "model"): "LLM_MODEL", ("llm", "timeout_seconds"): "LLM_TIMEOUT_SECONDS",
-    ("operator", "provider"): "OPERATOR_PROVIDER", ("operator", "operator_chat_ids"): "TELEGRAM_OPERATOR_CHAT_IDS",
+    ("operator", "provider"): "OPERATOR_PROVIDER", ("operator", "operators"): "TELEGRAM_OPERATOR_CHAT_IDS",
+    ("operator", "timeout_seconds"): "TELEGRAM_TIMEOUT_SECONDS",
     ("knowledge", "provider"): "KNOWLEDGE_PROVIDER", ("knowledge", "directory"): "KNOWLEDGE_DIR",
     ("embeddings", "provider"): "EMBEDDINGS_PROVIDER",
 }
@@ -81,7 +82,8 @@ class ProviderStatus(CoreModel):
     configuration_valid: bool
     implemented: bool
     # Local authorization where the provider needs one (Gmail): AUTHORIZED, AUTH_REQUIRED
-    # or AUTH_INVALID. None when not applicable.
+    # or AUTH_INVALID. Telegram: TOKEN_PRESENT (structurally valid, not verified here; the
+    # runtime verifies it with one getMe at startup). None when not applicable.
     authorization: str | None = None
     capability_available: bool
     problems: tuple[str, ...] = ()  # "SALES_AGENT_<VAR>: <CODE>"
@@ -100,7 +102,7 @@ class IntegrationStatus(CoreModel):
 
 
 def evaluate(config: IntegrationConfig, secrets: ProviderSecrets, *, mailboxes: Iterable[str] = (),
-             extra: Iterable[IntegrationProblem] = ()) -> IntegrationStatus:
+             operator_ids: Iterable[str] = (), extra: Iterable[IntegrationProblem] = ()) -> IntegrationStatus:
     """``extra``: problems found while parsing (e.g. an unknown provider ID)."""
     extra = tuple(extra)
     unknown = {p.category for p in extra if p.code is C.UNKNOWN_PROVIDER}
@@ -109,7 +111,7 @@ def evaluate(config: IntegrationConfig, secrets: ProviderSecrets, *, mailboxes: 
     warnings: list[IntegrationProblem] = []
     _email(config, secrets, tuple(mailboxes), problems, warnings)
     _llm(config, secrets, problems)
-    _operator(config, secrets, problems)
+    _operator(config, secrets, tuple(operator_ids), problems)
     _knowledge(config, problems)
     statuses = []
     for category, provider in selected(config):
@@ -128,6 +130,8 @@ def evaluate(config: IntegrationConfig, secrets: ProviderSecrets, *, mailboxes: 
             warnings.append(_problem(category, code, "GMAIL_TOKEN_FILE"))
         else:
             state = ProviderState.CONFIGURED
+            if category is P.OPERATOR_CHANNEL:
+                authorization = "TOKEN_PRESENT"
         statuses.append(ProviderStatus(
             category=category, provider=provider, state=state, configuration_valid=not own, implemented=implemented,
             authorization=authorization, capability_available=state is ProviderState.CONFIGURED, problems=own,
@@ -206,7 +210,8 @@ def _llm(config: IntegrationConfig, secrets: ProviderSecrets, problems: list[Int
         problems.append(_problem(P.LLM, C.MISSING_SECRET, "LLM_API_KEY"))
 
 
-def _operator(config: IntegrationConfig, secrets: ProviderSecrets, problems: list[IntegrationProblem]) -> None:
+def _operator(config: IntegrationConfig, secrets: ProviderSecrets, operator_ids: tuple[str, ...],
+              problems: list[IntegrationProblem]) -> None:
     if config.operator.provider is not OperatorProviderId.TELEGRAM:
         return
     token = secrets.telegram.bot_token
@@ -214,10 +219,14 @@ def _operator(config: IntegrationConfig, secrets: ProviderSecrets, problems: lis
         problems.append(_problem(P.OPERATOR_CHANNEL, C.MISSING_SECRET, "TELEGRAM_BOT_TOKEN"))
     elif not TELEGRAM_TOKEN.fullmatch(token.get_secret_value()):  # shape only; the value is never reported
         problems.append(_problem(P.OPERATOR_CHANNEL, C.INVALID_PROVIDER_CONFIG, "TELEGRAM_BOT_TOKEN"))
-    chats = config.operator.operator_chat_ids
-    if not chats:
+    operators = config.operator.operators
+    chats = [o.chat_id for o in operators]
+    names = [o.operator_id for o in operators]
+    if not operators:
         problems.append(_problem(P.OPERATOR_CHANNEL, C.MISSING_SETTING, "TELEGRAM_OPERATOR_CHAT_IDS"))
-    elif len(set(chats)) != len(chats) or 0 in chats:
+    elif (len(set(chats)) != len(chats) or len(set(names)) != len(names)
+          or (operator_ids and not set(names) <= set(operator_ids))):
+        # One private chat per operator, one operator per chat, and only Stage 7 operators.
         problems.append(_problem(P.OPERATOR_CHANNEL, C.INVALID_PROVIDER_CONFIG, "TELEGRAM_OPERATOR_CHAT_IDS"))
 
 

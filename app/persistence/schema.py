@@ -531,3 +531,43 @@ V10_EMAIL_PROVIDER_SYNC_SCHEMA: tuple[str, ...] = (
     ) STRICT""",
     "CREATE INDEX mailbox_sync_failures_open_idx ON mailbox_sync_failures (provider, mailbox, status, first_failed_at)",
 )
+
+# v11: operator channel (Telegram) synchronization. Only the update cursor, safe failure
+# records for unprocessable updates, notification identities (chat id, provider message
+# id) and pending confirmations: never a bot token, raw update or customer text.
+V11_OPERATOR_CHANNEL_SYNC_SCHEMA: tuple[str, ...] = (
+    f"""CREATE TABLE operator_channel_states (
+        state_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        account TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA},
+        UNIQUE (provider, account)
+    ) STRICT""",
+    f"""CREATE TABLE operator_channel_failures (
+        failure_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        account TEXT NOT NULL,
+        update_id INTEGER NOT NULL,
+        failed_at TEXT NOT NULL,
+        {_JSON_DATA},
+        UNIQUE (provider, account, update_id)
+    ) STRICT""",
+    f"""CREATE TABLE operator_notifications (
+        notification_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        chat_id INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('CLAIMED', 'SUBMITTING', 'SENT', 'FAILED', 'UNKNOWN')),
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA}
+    ) STRICT""",
+    "CREATE INDEX operator_notifications_chat_idx ON operator_notifications (provider, chat_id, status)",
+    f"""CREATE TABLE operator_confirmations (
+        confirmation_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        operator_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('PENDING', 'USED', 'CANCELLED')),
+        expires_at TEXT NOT NULL,
+        {_VERSIONED_DATA}
+    ) STRICT""",
+)
