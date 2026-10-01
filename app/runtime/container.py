@@ -8,6 +8,8 @@ Adapters are the existing boundary Protocols; a future real provider implements 
   until the final integration phase),
 - ``CommercialExtractor`` (Stage 13; fakes only) and a ``PriceCatalog`` (default: approved
   internal knowledge facts).
+The Stage 14 execution coordinator is built over the same subsystem instances and is told
+which capabilities exist, so a missing adapter only makes an action non-executable.
 The offline default configures none of the provider adapters, so the capabilities that
 need them are simply unavailable: no fake ever fabricates a provider outcome in a real
 database. Tests pass deterministic fakes explicitly.
@@ -25,6 +27,7 @@ from app.inbound import InboundService
 from app.llm import LLMTransport, StructuredLLM
 from app.operator import OperatorAuthenticator, OperatorCredential, OperatorService
 from app.commercial import CommercialExtractor, CommercialService, PriceCatalog
+from app.orchestration import ExecutionCapabilities, OrchestratorConfig, SalesOrchestrator
 from app.persistence import Clock, Database
 from app.pipeline import PipelineService, QualificationExtractor, SalesAdvisor
 from app.runtime.config import RuntimeConfig
@@ -83,6 +86,7 @@ class Services:
     inbound: InboundService | None
     pipeline: PipelineService
     commercial: CommercialService
+    orchestrator: SalesOrchestrator
 
 
 def build_services(db: Database, clock: Clock, config: RuntimeConfig, adapters: Adapters) -> Services:
@@ -94,18 +98,33 @@ def build_services(db: Database, clock: Clock, config: RuntimeConfig, adapters: 
     inbound = None
     if adapters.llm_transport is not None:
         inbound = InboundService(db, StructuredLLM(adapters.llm_transport, clock), clock, config.inbound_config())
+    campaign_scheduler = CampaignScheduler(db, clock, campaign_config)
+    campaign_executor = CampaignExecutor(db, clock, campaign_config)
+    follow_up_scheduler = FollowUpScheduler(db, clock, follow_up_config)
+    follow_up_executor = FollowUpExecutor(db, clock, follow_up_config)
+    capabilities = Capabilities.of(adapters)
+    orchestrator = SalesOrchestrator(
+        db, clock,
+        OrchestratorConfig(qualification=config.pipeline.profile, commercial=config.commercial.profile,
+                           follow_up=follow_up_config, dispatch=config.dispatch_config(), kill_switch=config.kill_switch,
+                           worker_id=config.worker.worker_id),
+        ExecutionCapabilities(dispatch=capabilities.dispatch, reconciliation=capabilities.reconciliation, llm=capabilities.inbound),
+        campaign_scheduler=campaign_scheduler, campaign_executor=campaign_executor, follow_up_scheduler=follow_up_scheduler,
+        follow_up_executor=follow_up_executor, dispatch=dispatch,
+    )
     return Services(
         operator=OperatorService(db, clock, config.operator_config(), adapters.authenticator, config.pipeline,
                                  config.commercial, adapters.price_catalog),
         campaign_enroller=CampaignEnroller(db, clock),
-        campaign_scheduler=CampaignScheduler(db, clock, campaign_config),
-        campaign_executor=CampaignExecutor(db, clock, campaign_config),
-        follow_up_scheduler=FollowUpScheduler(db, clock, follow_up_config),
-        follow_up_executor=FollowUpExecutor(db, clock, follow_up_config),
+        campaign_scheduler=campaign_scheduler,
+        campaign_executor=campaign_executor,
+        follow_up_scheduler=follow_up_scheduler,
+        follow_up_executor=follow_up_executor,
         dispatch=dispatch,
         inbound=inbound,
         pipeline=PipelineService(db, clock, config.pipeline, extractor=adapters.qualification_extractor,
                                  advisor=adapters.sales_advisor),
         commercial=CommercialService(db, clock, config.commercial, extractor=adapters.commercial_extractor,
                                      catalog=adapters.price_catalog),
+        orchestrator=orchestrator,
     )

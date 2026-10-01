@@ -46,16 +46,14 @@ from datetime import datetime
 
 from pydantic import JsonValue
 
-from app.core.enums import ActorType, CampaignMemberStatus, EmailDirection, OutboundDecision, OutboundKind, OutboundStatus, RefKind
+from app.core.enums import ActorType, EmailDirection, OutboundDecision, OutboundKind, OutboundStatus, RefKind
 from app.core.models import Actor, AuditEvent, EmailMessage, EmailThread, EntityRef, OutboundMessage, SendPermit
 from app.core.models.types import JsonObject
 from app.campaign import state as campaign_state
-from app.campaign.guards import campaign_blockers_for
 from app.campaign.state import is_campaign_message
 from app.conversation import state as conversation_state
-from app.conversation.guards import follow_up_dispatch_blockers
 from app.dispatch.errors import DispatchNotFoundError, DispatchStateError
-from app.dispatch.gates import Binding, approval_codes, bind, evaluate_policy
+from app.dispatch.gates import Binding, claim_gate_codes
 from app.dispatch.models import (
     AttemptView,
     DispatchCode,
@@ -75,7 +73,7 @@ from app.dispatch.transport import (
 )
 from app.inbound import stable_id
 from app.inbound.records import ref
-from app.operator.review import REVIEWABLE_KINDS, load_draft_context, reply_gate_blockers
+from app.operator.review import REVIEWABLE_KINDS, load_draft_context
 from app.persistence import (
     UNRESOLVED_ATTEMPT_STATES,
     Clock,
@@ -230,19 +228,7 @@ class DispatchService:
     def _check_gates(
         self, uow: UnitOfWork, outbound: OutboundMessage, *, first_attempt: bool, now: datetime
     ) -> tuple[Binding | None, list[str]]:
-        codes: list[str] = list(approval_codes(uow, outbound, first_attempt=first_attempt))
-        binding, binding_codes = bind(uow, outbound, self._config)
-        codes += binding_codes
-        codes += [code.value for code in reply_gate_blockers(uow, outbound, self._config.sender, now)]
-        # A follow-up draft also needs its conversation to still allow follow-ups (Stage 9),
-        # and a campaign touch its campaign and membership to still allow sending (Stage 10).
-        codes += follow_up_dispatch_blockers(uow, outbound, now)
-        codes += campaign_blockers_for(uow, outbound, now, expected=CampaignMemberStatus.APPROVED)
-        if binding is not None:
-            policy = evaluate_policy(uow, outbound, binding, self._config, now)
-            if policy.decision is not OutboundDecision.SEND:
-                codes += [reason.value for reason in policy.reasons]
-        return binding, codes
+        return claim_gate_codes(uow, outbound, self._config, first_attempt=first_attempt, now=now)
 
     def _write_claim(
         self, uow: UnitOfWork, outbound: OutboundMessage, attempts: list[DispatchAttempt], binding: Binding,

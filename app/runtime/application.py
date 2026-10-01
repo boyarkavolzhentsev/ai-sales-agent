@@ -18,6 +18,14 @@ from datetime import datetime
 from pathlib import Path
 
 from app.inbound import InboundEnvelope, InboundResult
+from app.orchestration import (
+    ExecutionMetrics,
+    ExecutionPassResult,
+    ExecutionQueue,
+    ExecutionResult,
+    SalesExecutionPlan,
+    SalesExecutionView,
+)
 from app.persistence import MEMORY, Clock, Database, PersistenceError, SchemaVersionError, SystemClock
 from app.persistence.migrations import latest_version
 from app.runtime import workers
@@ -191,6 +199,39 @@ class SalesAgentRuntime:
             services.pipeline.record_inbound(result, correlation_id=correlation_id)
             services.commercial.record_inbound(result, correlation_id=correlation_id)
             return result
+
+    # ---- Sales execution coordination (Stage 14) ------------------------------------------------
+
+    def execution_plan(self, lead_id: str) -> SalesExecutionPlan:
+        """Read-only: the single next owner/action of one lead, from one consistent snapshot."""
+        return self._ready_services().orchestrator.plan(lead_id)
+
+    def execution_view(self, lead_id: str) -> SalesExecutionView:
+        return self._ready_services().orchestrator.view(lead_id)
+
+    def execution_queue(self, which: ExecutionQueue, *, limit: int | None = None) -> tuple[SalesExecutionPlan, ...]:
+        return self._ready_services().orchestrator.queue(which, limit=limit or self._config.worker.batch_limit)
+
+    def execution_metrics(self) -> ExecutionMetrics:
+        return self._ready_services().orchestrator.metrics()
+
+    def execution_once(self, lead_id: str, expected_fingerprint: str, *, dispatch_approved: bool = False,
+                       execution_id: str | None = None, correlation_id: str | None = None) -> ExecutionResult:
+        """At most one business action for one lead, only if the plan is still current.
+        Dispatch of an operator-approved message only when explicitly requested."""
+        with self._work() as services:
+            return services.orchestrator.execute(lead_id, expected_fingerprint, allow_dispatch=dispatch_approved,
+                                                 execution_id=execution_id,
+                                                 correlation_id=correlation_id or self._correlation("execute"))
+
+    def execution_pass(self, *, limit: int | None = None, dispatch_approved: bool = False,
+                       correlation_id: str | None = None) -> ExecutionPassResult:
+        """One bounded pass: at most ``limit`` leads (default: the worker batch limit), at
+        most one action each. Runs once and returns; never on startup, never in a loop."""
+        with self._work() as services:
+            return services.orchestrator.execution_pass(correlation_id=correlation_id or self._correlation("execution-pass"),
+                                                        limit=limit or self._config.worker.batch_limit,
+                                                        allow_dispatch=dispatch_approved)
 
     # ---- Internals ------------------------------------------------------------------------------
 

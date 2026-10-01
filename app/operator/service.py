@@ -966,7 +966,7 @@ class OperatorService:
         lead = load_lead(uow, command.lead_id, command.expected_lead_version)
         after, stop = pipeline_lifecycle.mark_lost(
             uow, lead, reason=command.reason, operator_id=operator_id, command_id=command.command_id,
-            correlation_id=command.correlation_id, now=now)
+            correlation_id=command.correlation_id, now=now, expected_opportunity_version=command.expected_opportunity_version)
         commercial_lifecycle.close_for_lead(uow, after, correlation_id=command.correlation_id, now=now)
         return self._closed_applied(lead, after, stop, command.reason.value, command.note)
 

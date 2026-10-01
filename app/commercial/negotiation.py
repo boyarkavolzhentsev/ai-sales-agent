@@ -8,7 +8,9 @@
 - objections become OPEN ``Objection`` rows (one per category per message);
 - acceptance/decline become OPEN ``CommercialSignal`` rows; a newer message's signal
   supersedes older open ones, and an older message replayed later is recorded as
-  already SUPERSEDED (it never outranks what the customer said since).
+  already SUPERSEDED (it never outranks what the customer said since). A message that
+  opens a signal advances the opportunity version once, so a WON/LOST decision prepared
+  before it is stale and must be taken again on the fresh state.
 Nothing here approves a term, decides a proposal, or closes a lead. Objections are only
 closed by an operator: sending a response never resolves one.
 """
@@ -30,6 +32,7 @@ from app.core.models import (
     CommercialValue,
     EmailMessage,
     Objection,
+    Opportunity,
     TermRequest,
 )
 from app.inbound.models import stable_id
@@ -99,16 +102,39 @@ def record_extraction(
         outcome.objections.append(objection_id)
     kinds = [k for k, flag in ((SignalKind.ACCEPTANCE, extraction.acceptance_signal),
                                (SignalKind.DECLINE, extraction.decline_signal)) if flag]
+    opened = False
     for kind in kinds:
-        signal_id = _record_signal(uow, context, current.revision_id if current else None, kind, message,
-                                   correlation_id=correlation_id, now=now)
-        if signal_id is not None:
-            outcome.signals.append(signal_id)
+        signal = _record_signal(uow, context, current.revision_id if current else None, kind, message,
+                                correlation_id=correlation_id, now=now)
+        if signal is not None:
+            outcome.signals.append(signal.signal_id)
+            opened = opened or signal.status is SignalStatus.OPEN
+    if opened:
+        _advance_decision_context(uow, opportunity_id, message, correlation_id=correlation_id, now=now)
     return outcome
 
 
+def _advance_decision_context(uow: UnitOfWork, opportunity_id: str, message: EmailMessage, *, correlation_id: str,
+                              now: datetime) -> None:
+    """A new open acceptance/decline signal is newer customer evidence for the terminal
+    decision: the opportunity version (the token MarkLeadWon / MarkLeadLost bind to) moves,
+    so an operator decision prepared on an older snapshot becomes stale. Nothing else of
+    the opportunity changes. Once per message: a replayed message records no new signal,
+    and a signal already superseded at birth changes nothing."""
+    opportunity = uow.opportunities.get(opportunity_id)
+    if opportunity is None:
+        return
+    advanced = Opportunity.model_validate(opportunity.model_dump() | {
+        "updated_at": max(now, opportunity.updated_at), "version": opportunity.version + 1})
+    uow.opportunities.update(advanced, opportunity.version)
+    record_event(uow, key=(opportunity_id, str(advanced.version)), event_type="OPPORTUNITY_CUSTOMER_SIGNAL",
+                 subjects=(ref(RefKind.OPPORTUNITY, opportunity_id), ref(RefKind.EMAIL_MESSAGE, message.message_id)),
+                 before={"version": opportunity.version}, after={"version": advanced.version},
+                 correlation_id=correlation_id, now=now)
+
+
 def _record_signal(uow: UnitOfWork, context: OpportunityContext, revision_id: str | None, kind: SignalKind,
-                   message: EmailMessage, *, correlation_id: str, now: datetime) -> str | None:
+                   message: EmailMessage, *, correlation_id: str, now: datetime) -> CommercialSignal | None:
     opportunity_id = context.opportunity.opportunity_id
     signal_id = stable_id("cs", opportunity_id, kind.value, message.message_id)
     if uow.commercial_signals.get(signal_id) is not None:
@@ -131,7 +157,7 @@ def _record_signal(uow: UnitOfWork, context: OpportunityContext, revision_id: st
         for older in existing:
             if older.status is SignalStatus.OPEN and older.message_at < message_at:
                 close_signal(uow, older, SignalStatus.SUPERSEDED, operator_id=None, correlation_id=correlation_id, now=now)
-    return signal_id
+    return signal
 
 
 def update_objection(uow: UnitOfWork, *, objection_id: str, expected_version: int, status: ObjectionStatus,

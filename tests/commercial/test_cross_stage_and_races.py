@@ -23,7 +23,6 @@ from app.operator import (
     CommandRejectedError,
     CommandResult,
     CreateProposal,
-    MarkLeadLost,
     MarkLeadWon,
     MarkProposalPresented,
     OperatorService,
@@ -53,7 +52,7 @@ from tests.conversation.test_races_and_recovery import run_concurrently
 from tests.dispatch.builders import dispatcher, send
 from tests.inbound.builders import NOW, SENDER, envelope, happy_transport, process
 from tests.operator.builders import AS_ALICE, credential
-from tests.pipeline.builders import active_opportunity, lead
+from tests.pipeline.builders import active_opportunity, lead, lost_command
 from tests.runtime.builders import fake_adapters, runtime
 
 ROUNDS = range(3)
@@ -200,8 +199,7 @@ def test_4_mark_won_vs_new_objection(db_path: Path, round_no: int) -> None:
 def test_5_mark_lost_vs_acceptance_signal(db_path: Path, round_no: int) -> None:
     with Database(db_path) as db:
         lead_id, opportunity_id = presented(db)
-        command = MarkLeadLost(command_id="cmd-lost", correlation_id="c", lead_id=lead_id,
-                               expected_lead_version=lead(db, lead_id).version, reason=LostReason.NO_DECISION)
+        command = lost_command(db, lead_id, LostReason.NO_DECISION)
     results = run_concurrently(db_path, lambda db: ops_for(db).mark_lead_lost(AS_ALICE, command),
                                lambda db: reply_with(db, "p-2", asks(accept=True)))
     assert refused_or_done(results[0]) and not isinstance(results[1], Exception), results
@@ -236,8 +234,7 @@ def test_7_opportunity_close_vs_revision(db_path: Path, round_no: int) -> None:
     with Database(db_path) as db:
         lead_id, opportunity_id = presented(db)
         revision = current(db, opportunity_id)
-        lost = MarkLeadLost(command_id="cmd-lost", correlation_id="c", lead_id=lead_id,
-                            expected_lead_version=lead(db, lead_id).version, reason=LostReason.CHOSE_COMPETITOR)
+        lost = lost_command(db, lead_id, LostReason.CHOSE_COMPETITOR)
     revise = ReviseProposal(command_id="cmd-rev", correlation_id="c", revision_id=revision.revision_id,
                             expected_revision_version=revision.version)
     results = run_concurrently(db_path, lambda db: ops_for(db).mark_lead_lost(AS_ALICE, lost),

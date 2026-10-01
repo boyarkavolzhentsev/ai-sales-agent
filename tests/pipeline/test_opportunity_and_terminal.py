@@ -36,6 +36,7 @@ from tests.conversation.builders import replied_conversation, scheduler as follo
 from tests.inbound.builders import NOW, envelope, happy_transport, process
 from tests.operator.builders import AS_ALICE, credential
 from tests.pipeline.builders import (
+    lost_command,
     active_opportunity,
     create_opportunity,
     disqualify,
@@ -141,8 +142,7 @@ def test_a_stale_terminal_command_is_rejected_without_writes(db: Database) -> No
 
 def test_terminal_commands_are_idempotent_and_collisions_are_refused(db: Database) -> None:
     lead_id = opportunity_lead(db)
-    command = MarkLeadLost(command_id="cmd-lost-1", correlation_id="c", lead_id=lead_id,
-                           expected_lead_version=lead(db, lead_id).version, reason=LostReason.NO_BUDGET)
+    command = lost_command(db, lead_id, LostReason.NO_BUDGET, "cmd-lost-1")
     first = ops(db).mark_lead_lost(AS_ALICE, command)
     again = ops(db).mark_lead_lost(AS_ALICE, command.model_copy(update={"correlation_id": "retry"}))
     assert (first.replayed, again.replayed, again.outcome) == (False, True, first.outcome)

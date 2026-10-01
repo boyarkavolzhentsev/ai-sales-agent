@@ -157,12 +157,20 @@ def mark_won(
 
 def mark_lost(
     uow: UnitOfWork, lead: Lead, *, reason: LostReason, operator_id: str, command_id: str, correlation_id: str,
-    now: datetime,
+    now: datetime, expected_opportunity_version: int | None = None,
 ) -> tuple[Lead, AutomationStop]:
     """Commercially terminal from any open stage. Not DNC: the contact stays contactable
-    by a future explicit action unless it is (separately) suppressed."""
+    by a future explicit action unless it is (separately) suppressed.
+
+    With an active opportunity the decision is bound to the opportunity version the
+    operator saw (the commercial decision-context token, as for WON): a missing or older
+    version is stale, e.g. when a customer acceptance/decline signal arrived since. Without
+    an active opportunity no version may be expected."""
     require_open(lead)
     active = uow.opportunities.get_active_for_lead(lead.lead_id)
+    seen = active.version if active is not None else None
+    if expected_opportunity_version != seen:
+        raise PipelineError(PipelineCode.OPPORTUNITY_VERSION_CHANGED)
     lead = apply_transition(uow, lead, PipelineTrigger.OPERATOR_MARKED_LOST, LeadStage.CLOSED,
                             close_reason=CloseReason.LOST, actor=operator_actor(operator_id),
                             correlation_id=correlation_id, now=now, reason=reason.value, command_id=command_id)

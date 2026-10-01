@@ -417,8 +417,12 @@ class MarkLeadWon(_LeadCommand):
 
 
 class MarkLeadLost(_LeadCommand):
+    """``expected_opportunity_version`` is required exactly when the lead has an active
+    opportunity (the version the operator decided on); None otherwise."""
+
     kind: Literal[CommandKind.MARK_LEAD_LOST] = CommandKind.MARK_LEAD_LOST
     expected_lead_version: Version
+    expected_opportunity_version: Version | None = None
     reason: LostReason
     note: OperatorNote | None = None
 

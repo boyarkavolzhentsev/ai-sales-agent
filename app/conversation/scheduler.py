@@ -10,7 +10,11 @@ claim_due(): one IMMEDIATE transaction that leases due SCHEDULED jobs and CLAIME
 whose lease expired (a crashed or stalled worker). Each claim gets a fresh token; only
 the current token can execute, so a stalled worker that wakes up later cannot act.
 Execution is at-least-once; its effect (one draft per job) is idempotent.
+
+claim(): the same lease for exactly one job (used by the Stage 14 execution coordinator).
 """
+
+from datetime import datetime
 
 from app.core.enums import ConversationStatus, FollowUpJobStatus, RefKind
 from app.core.models import FollowUpJob
@@ -19,7 +23,7 @@ from app.conversation.ids import follow_up_id_for, stable_id
 from app.conversation.models import FollowUpClaim, ScheduleOutcome, ScheduleResult
 from app.conversation.policy import FollowUpBlock, FollowUpConfig, load_facts, next_due, schedule_blockers
 from app.conversation.state import save
-from app.persistence import Clock, Database, NotFoundError
+from app.persistence import Clock, Database, NotFoundError, UnitOfWork
 
 REOPENABLE = frozenset({FollowUpJobStatus.CANCELLED, FollowUpJobStatus.BLOCKED, FollowUpJobStatus.SUPERSEDED})
 
@@ -92,19 +96,39 @@ class FollowUpScheduler:
         claims: list[FollowUpClaim] = []
         with self._db.transaction() as uow:
             for job in uow.follow_up_jobs.list_claimable(now, limit):
-                recovered = job.status is FollowUpJobStatus.CLAIMED
-                token = stable_id("fc", job.follow_up_id, str(job.claim_count + 1))
-                claimed = FollowUpJob.model_validate(
-                    job.model_dump()
-                    | {"status": FollowUpJobStatus.CLAIMED, "claim_token": token, "claimed_by": worker_id,
-                       "lease_expires_at": now + self._config.lease, "claim_count": job.claim_count + 1,
-                       "updated_at": max(now, job.updated_at), "version": job.version + 1}
-                )
-                uow.follow_up_jobs.update(claimed, job.version)
-                append_event(uow, key=(job.follow_up_id, str(claimed.version)), event_type="FOLLOW_UP_CLAIMED",
-                             subjects=(ref(RefKind.FOLLOW_UP_JOB, job.follow_up_id), ref(RefKind.CONVERSATION, job.conversation_id)),
-                             after={"worker_id": worker_id, "claim_no": claimed.claim_count, "recovered": recovered},
-                             correlation_id=correlation_id, now=now)
-                claims.append(FollowUpClaim(follow_up_id=job.follow_up_id, conversation_id=job.conversation_id, claim_token=token,
-                                            claimed_by=worker_id, lease_expires_at=now + self._config.lease, recovered=recovered))
+                claims.append(self._claim(uow, job, worker_id, correlation_id, now))
         return tuple(claims)
+
+    def claim(self, follow_up_id: str, worker_id: str, *, correlation_id: str) -> FollowUpClaim | None:
+        """Lease exactly this job when claim_due() would: due and SCHEDULED, or CLAIMED with
+        an expired lease. None otherwise (not due, done, or another worker holds it)."""
+        now = self._clock.now()
+        with self._db.transaction() as uow:
+            job = uow.follow_up_jobs.get(follow_up_id)
+            if job is None or not is_claimable(job, now):
+                return None
+            return self._claim(uow, job, worker_id, correlation_id, now)
+
+    def _claim(self, uow: UnitOfWork, job: FollowUpJob, worker_id: str, correlation_id: str, now: datetime) -> FollowUpClaim:
+        recovered = job.status is FollowUpJobStatus.CLAIMED
+        token = stable_id("fc", job.follow_up_id, str(job.claim_count + 1))
+        claimed = FollowUpJob.model_validate(
+            job.model_dump()
+            | {"status": FollowUpJobStatus.CLAIMED, "claim_token": token, "claimed_by": worker_id,
+               "lease_expires_at": now + self._config.lease, "claim_count": job.claim_count + 1,
+               "updated_at": max(now, job.updated_at), "version": job.version + 1}
+        )
+        uow.follow_up_jobs.update(claimed, job.version)
+        append_event(uow, key=(job.follow_up_id, str(claimed.version)), event_type="FOLLOW_UP_CLAIMED",
+                     subjects=(ref(RefKind.FOLLOW_UP_JOB, job.follow_up_id), ref(RefKind.CONVERSATION, job.conversation_id)),
+                     after={"worker_id": worker_id, "claim_no": claimed.claim_count, "recovered": recovered},
+                     correlation_id=correlation_id, now=now)
+        return FollowUpClaim(follow_up_id=job.follow_up_id, conversation_id=job.conversation_id, claim_token=token,
+                             claimed_by=worker_id, lease_expires_at=now + self._config.lease, recovered=recovered)
+
+
+def is_claimable(job: FollowUpJob, now: datetime) -> bool:
+    """The list_claimable() condition for one job."""
+    if job.status is FollowUpJobStatus.SCHEDULED:
+        return job.due_at <= now
+    return job.status is FollowUpJobStatus.CLAIMED and job.lease_expires_at is not None and job.lease_expires_at <= now

@@ -140,9 +140,22 @@ def mark_won(db: Database, lead_id: str, command_id: str = "cmd-won") -> Command
 
 def mark_lost(db: Database, lead_id: str, reason: LostReason = LostReason.CHOSE_COMPETITOR,
               command_id: str = "cmd-lost") -> CommandResult:
-    return ops(db).mark_lead_lost(AS_ALICE, MarkLeadLost(
-        command_id=command_id, correlation_id="c", lead_id=lead_id, expected_lead_version=lead(db, lead_id).version,
-        reason=reason))
+    return ops(db).mark_lead_lost(AS_ALICE, lost_command(db, lead_id, reason, command_id))
+
+
+def opportunity_version(db: Database, lead_id: str) -> int | None:
+    """The version an operator sees for the lead's active opportunity (None without one)."""
+    with db.transaction() as uow:
+        found = uow.opportunities.get_active_for_lead(lead_id)
+    return found.version if found else None
+
+
+def lost_command(db: Database, lead_id: str, reason: LostReason = LostReason.CHOSE_COMPETITOR,
+                 command_id: str = "cmd-lost") -> MarkLeadLost:
+    """MarkLeadLost built from the current snapshot (lead and active opportunity versions)."""
+    return MarkLeadLost(command_id=command_id, correlation_id="c", lead_id=lead_id,
+                        expected_lead_version=lead(db, lead_id).version,
+                        expected_opportunity_version=opportunity_version(db, lead_id), reason=reason)
 
 
 def reopen(db: Database, lead_id: str, target: LeadStage = LeadStage.ENGAGED, command_id: str = "cmd-reopen") -> CommandResult:

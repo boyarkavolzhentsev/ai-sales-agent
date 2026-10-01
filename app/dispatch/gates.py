@@ -16,13 +16,15 @@ the thread. It is sent from the thread's mailbox, which must be one of ours.
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.core.enums import ActorType, OutboundKind, RefKind
+from app.campaign.guards import campaign_blockers_for
+from app.conversation.guards import follow_up_dispatch_blockers
+from app.core.enums import ActorType, CampaignMemberStatus, OutboundDecision, OutboundKind, RefKind
 from app.core.models import Campaign, EmailMessage, EmailThread, OutboundMessage, ProspectContact
 from app.dispatch.models import DispatchCode, DispatchConfig
 from app.inbound.records import ref
 from app.llm.claim_check import draft_hash
 from app.operator.models import CommandKind, CommandOutcome
-from app.operator.review import load_draft_context
+from app.operator.review import load_draft_context, reply_gate_blockers
 from app.persistence import UnitOfWork
 from app.policy import PolicyDecisionResult
 from app.policy.reply import evaluate_send_policy
@@ -130,3 +132,25 @@ def evaluate_policy(
         mailbox=binding.sender_mailbox, limits=config.limits, window=config.window, kill_switch=config.kill_switch, now=now,
         exclude_outbound_id=outbound.outbound_id,
     )
+
+
+def claim_gate_codes(
+    uow: UnitOfWork, outbound: OutboundMessage, config: DispatchConfig, *, first_attempt: bool, now: datetime
+) -> tuple[Binding | None, list[str]]:
+    """Every current-state check a dispatch claim makes, read-only: approval provenance,
+    recipient/sender binding, the shared Stage 7 gates, the Stage 9 / Stage 10 dispatch
+    guards and the Stage 3 policy. The claim uses it inside its own transaction; Stage 14
+    uses it to see, without writing, whether a claim would be refused now."""
+    codes: list[str] = list(approval_codes(uow, outbound, first_attempt=first_attempt))
+    binding, binding_codes = bind(uow, outbound, config)
+    codes += binding_codes
+    codes += [code.value for code in reply_gate_blockers(uow, outbound, config.sender, now)]
+    # A follow-up draft also needs its conversation to still allow follow-ups (Stage 9),
+    # and a campaign touch its campaign and membership to still allow sending (Stage 10).
+    codes += follow_up_dispatch_blockers(uow, outbound, now)
+    codes += campaign_blockers_for(uow, outbound, now, expected=CampaignMemberStatus.APPROVED)
+    if binding is not None:
+        policy = evaluate_policy(uow, outbound, binding, config, now)
+        if policy.decision is not OutboundDecision.SEND:
+            codes += [reason.value for reason in policy.reasons]
+    return binding, codes
