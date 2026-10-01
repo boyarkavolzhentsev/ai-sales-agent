@@ -40,12 +40,16 @@ def test_no_provider_selected_is_valid_and_needs_nothing() -> None:
 
 
 @pytest.mark.parametrize("with_file", [False, True])
-def test_gmail_structurally_valid_is_not_implemented_and_not_a_capability(tmp_path: Path, with_file: bool) -> None:
-    status = status_of(gmail(tmp_path, with_file=with_file))
-    email = status.of(P.EMAIL)
-    assert (email.provider, email.state, email.configuration_valid) == ("GMAIL", S.NOT_IMPLEMENTED, True)
-    assert not email.implemented and not email.capability_available and status.valid
-    assert build_provider_adapters(parse_integrations(gmail(tmp_path)).config, ProviderSecrets()).email_transport is None
+def test_gmail_structurally_valid_is_implemented_and_needs_authorization(tmp_path: Path, with_file: bool) -> None:
+    # Stage 16 implements Gmail. Without a token file or refresh secret it needs authorization;
+    # with only a refresh secret it is locally authorized (a token can be bootstrapped).
+    unauthorized = status_of(gmail(tmp_path, with_file=True)).of(P.EMAIL)
+    assert (unauthorized.provider, unauthorized.state, unauthorized.authorization) == ("GMAIL", S.AUTH_REQUIRED, "AUTH_REQUIRED")
+    assert unauthorized.implemented and unauthorized.configuration_valid and not unauthorized.capability_available
+    email = status_of(gmail(tmp_path, with_file=with_file)).of(P.EMAIL)
+    expected = ("AUTH_REQUIRED", S.AUTH_REQUIRED) if with_file else ("AUTHORIZED", S.CONFIGURED)
+    assert (email.authorization, email.state) == expected
+    assert build_provider_adapters(parse_integrations({}).config, ProviderSecrets()).email_transport is None
 
 
 @pytest.mark.parametrize(("drop", "problem"), [

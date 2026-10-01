@@ -103,6 +103,7 @@ class CapabilityReport(CoreModel):
     dispatch: bool
     reconciliation: bool
     inbound: bool
+    email_sync: bool = False
 
 
 class StartupReport(CoreModel):

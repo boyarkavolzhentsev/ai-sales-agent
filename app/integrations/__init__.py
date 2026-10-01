@@ -1,9 +1,10 @@
 """Integration foundation (Stage 15): provider selection, non-secret provider settings,
 provider secrets, configuration health and the provider factory boundary.
 
-Configuration only. Nothing here opens a connection, imports a provider SDK, reads a
-credential file or constructs a client; no real provider adapter exists yet, so every
-selected external provider reports NOT_IMPLEMENTED and its capability stays unavailable.
+The modules directly in this package are configuration only: nothing opens a connection,
+imports a provider SDK or reads a credential file. Real provider code lives in provider
+subpackages (``gmail``, Stage 16), loaded only when that provider is selected. Selected
+providers without an implementation (LLM, Telegram) report NOT_IMPLEMENTED.
 Dependency direction: runtime -> integrations -> provider-neutral contracts.
 """
 
@@ -25,7 +26,13 @@ from app.integrations.providers import (
     OperatorProviderId,
     ProviderCategory,
 )
-from app.integrations.registry import ProviderAdapters, build_provider_adapters, is_implemented
+from app.integrations.registry import (
+    ProviderAdapters,
+    ProviderConnectors,
+    ProviderUnavailableError,
+    build_provider_adapters,
+    is_implemented,
+)
 from app.integrations.secrets import GmailSecrets, LLMSecrets, ProviderSecrets, TelegramSecrets
 from app.integrations.status import IntegrationStatus, ProviderState, ProviderStatus, evaluate
 
@@ -50,6 +57,8 @@ __all__ = [
     "OperatorProviderId",
     "ParsedIntegrations",
     "ProviderAdapters",
+    "ProviderConnectors",
+    "ProviderUnavailableError",
     "ProviderCategory",
     "ProviderSecrets",
     "ProviderState",

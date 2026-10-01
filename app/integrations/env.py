@@ -29,7 +29,7 @@ from app.integrations.status import CATEGORY_OF_SECTION, SECRET_VARIABLES, VARIA
 SETTING_VARIABLES = frozenset(VARIABLES.values())
 SECRET_NAMES = frozenset(SECRET_VARIABLES.values())
 INTEGRATION_VARIABLES = SETTING_VARIABLES | SECRET_NAMES
-_INTEGERS = frozenset({"GMAIL_POLL_INTERVAL_SECONDS", "LLM_TIMEOUT_SECONDS"})
+_INTEGERS = frozenset({"GMAIL_POLL_INTERVAL_SECONDS", "GMAIL_TIMEOUT_SECONDS", "LLM_TIMEOUT_SECONDS"})
 _SECTIONS: dict[str, type[CoreModel]] = {"email": EmailProviderConfig, "llm": LLMProviderConfig,
                                           "operator": OperatorChannelConfig, "knowledge": KnowledgeProviderConfig,
                                           "embeddings": EmbeddingsProviderConfig}

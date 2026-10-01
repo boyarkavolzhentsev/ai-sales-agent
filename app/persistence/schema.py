@@ -505,3 +505,29 @@ V9_COMMERCIAL_SCHEMA: tuple[str, ...] = (
     "CREATE INDEX commercial_signals_opportunity_idx ON commercial_signals (opportunity_id, status)",
     "CREATE INDEX commercial_signals_status_idx ON commercial_signals (status, message_at)",
 )
+
+# v10: provider-neutral inbound mailbox synchronization. Only a cursor (an opaque provider
+# position such as a Gmail historyId) and per-message processing failures: never a token,
+# credential, message body or subject.
+V10_EMAIL_PROVIDER_SYNC_SCHEMA: tuple[str, ...] = (
+    f"""CREATE TABLE mailbox_sync_states (
+        state_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        mailbox TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RECOVERY_REQUIRED')),
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA},
+        UNIQUE (provider, mailbox)
+    ) STRICT""",
+    f"""CREATE TABLE mailbox_sync_failures (
+        failure_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        mailbox TEXT NOT NULL,
+        provider_message_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('OPEN', 'RESOLVED')),
+        first_failed_at TEXT NOT NULL,
+        {_VERSIONED_DATA},
+        UNIQUE (provider, mailbox, provider_message_id)
+    ) STRICT""",
+    "CREATE INDEX mailbox_sync_failures_open_idx ON mailbox_sync_failures (provider, mailbox, status, first_failed_at)",
+)

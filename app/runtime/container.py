@@ -7,7 +7,8 @@ Adapters are the existing boundary Protocols; a future real provider implements 
 - ``QualificationExtractor`` and ``SalesAdvisor`` (Stage 12 AI contracts; fakes only
   until the final integration phase),
 - ``CommercialExtractor`` (Stage 13; fakes only) and a ``PriceCatalog`` (default: approved
-  internal knowledge facts).
+  internal knowledge facts),
+- ``MailboxReader`` (Stage 16 inbound mailbox sync; Gmail).
 The Stage 14 execution coordinator is built over the same subsystem instances and is told
 which capabilities exist, so a missing adapter only makes an action non-executable.
 The offline default configures none of the provider adapters, so the capabilities that
@@ -18,13 +19,14 @@ Construction performs no I/O and starts nothing: ``build_services`` only wires o
 around one Database and one Clock.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from app.campaign import CampaignEnroller, CampaignExecutor, CampaignScheduler
 from app.conversation import FollowUpExecutor, FollowUpScheduler
 from app.dispatch import DispatchReconciler, DispatchService, EmailTransport
 from app.inbound import InboundService
-from app.integrations import build_provider_adapters
+from app.integrations import ProviderConnectors, build_provider_adapters
+from app.integrations.mailbox import MailboxReader, MailboxSync
 from app.llm import LLMTransport, StructuredLLM
 from app.operator import OperatorAuthenticator, OperatorCredential, OperatorService
 from app.commercial import CommercialExtractor, CommercialService, PriceCatalog
@@ -51,6 +53,7 @@ class Adapters:
     sales_advisor: SalesAdvisor | None = None
     commercial_extractor: CommercialExtractor | None = None
     price_catalog: PriceCatalog | None = None
+    mailbox: MailboxReader | None = None
 
 
 def offline_adapters() -> Adapters:
@@ -59,14 +62,18 @@ def offline_adapters() -> Adapters:
     return Adapters()
 
 
-def configured_adapters(config: RuntimeConfig) -> Adapters:
-    """The adapters the configured providers provide, through the Stage 15 provider
-    factory. No real provider is implemented yet, so this is the offline set whatever is
-    selected: a configured provider never becomes a capability by itself, and no fake is
-    ever substituted. (Programmatic callers, e.g. tests, may still inject adapters.)"""
-    built = build_provider_adapters(config.integrations, config.secrets)
-    return Adapters(email_transport=built.email_transport, reconciler=built.reconciler, llm_transport=built.llm_transport,
-                    authenticator=built.authenticator or DenyAllAuthenticator())
+def configured_adapters(config: RuntimeConfig, base: Adapters | None = None,
+                        connectors: ProviderConnectors | None = None) -> Adapters:
+    """The adapters of the configured providers, through the provider factory, on top of
+    ``base`` (injected adapters, e.g. tests; else the offline set). A selected provider's
+    adapters always replace the injected ones of its category, and a provider without an
+    implementation contributes nothing: no fake is ever substituted. Building Gmail
+    adapters reads/refreshes the local token and checks the account (ProviderUnavailableError)."""
+    base = base or offline_adapters()
+    built = build_provider_adapters(config.integrations, config.secrets, connectors)
+    if built.email_transport is None:
+        return base
+    return replace(base, email_transport=built.email_transport, reconciler=built.reconciler, mailbox=built.mailbox)
 
 
 @dataclass(frozen=True)
@@ -74,6 +81,7 @@ class Capabilities:
     dispatch: bool
     reconciliation: bool
     inbound: bool
+    email_sync: bool = False
 
     @classmethod
     def of(cls, adapters: Adapters) -> "Capabilities":
@@ -82,6 +90,7 @@ class Capabilities:
             dispatch=adapters.email_transport is not None,
             reconciliation=adapters.email_transport is not None and adapters.reconciler is not None,
             inbound=adapters.llm_transport is not None,
+            email_sync=adapters.mailbox is not None,
         )
 
 
@@ -98,6 +107,7 @@ class Services:
     pipeline: PipelineService
     commercial: CommercialService
     orchestrator: SalesOrchestrator
+    mailbox_sync: MailboxSync | None = None
 
 
 def build_services(db: Database, clock: Clock, config: RuntimeConfig, adapters: Adapters) -> Services:
@@ -138,4 +148,5 @@ def build_services(db: Database, clock: Clock, config: RuntimeConfig, adapters: 
         commercial=CommercialService(db, clock, config.commercial, extractor=adapters.commercial_extractor,
                                      catalog=adapters.price_catalog),
         orchestrator=orchestrator,
+        mailbox_sync=MailboxSync(db, clock, adapters.mailbox) if adapters.mailbox is not None else None,
     )

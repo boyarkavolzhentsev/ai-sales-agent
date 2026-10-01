@@ -15,9 +15,15 @@
   execution-metrics read-only: execution metrics over open leads
   execution-pass    one bounded Stage 14 pass: at most one automatic action per lead
                     [--dispatch-approved: may also dispatch operator-approved messages]
-  provider-status   read-only: selected providers, configuration validity, implementation
-                    and capability availability, production readiness. Needs no database,
-                    contacts no provider, never prints a secret value
+  provider-status   read-only: selected providers, configuration validity, implementation,
+                    local authorization and capability availability, production readiness.
+                    Needs no database, contacts no provider, never prints a secret value
+  gmail-auth        the explicit, interactive Gmail authorization (installed-app OAuth in
+                    the browser); stores the token file only if the authorized account is
+                    the configured GMAIL_ADDRESS. Needs no database. Never runs implicitly
+  email-sync        one bounded inbound mailbox pass (the first pass only sets the cursor)
+                    [--recover: explicitly re-establish an expired cursor; mail in the gap
+                    is not ingested]
 
 Every command runs once and exits; there is no loop or daemon. Configuration comes from
 ``SALES_AGENT_*`` environment variables. Output is JSON with IDs, counts and codes only;
@@ -38,22 +44,29 @@ from typing import TextIO
 
 from pydantic import BaseModel
 
+from app.integrations import ProviderConnectors
 from app.orchestration import ExecutionOutcome, ExecutionPassResult, ExecutionQueue, OrchestrationNotFoundError
 from app.persistence import MEMORY, SystemClock
 from app.persistence.migrations import current_version, latest_version
 from app.runtime.application import SalesAgentRuntime
+from app.runtime.config import RuntimeConfig
 from app.runtime.env import inspect_integrations, load_config
 from app.runtime.errors import ConfigError, StartupError
 from app.runtime.results import PhaseStatus, RuntimeTickResult
 
 OK, UNEXPECTED, INVALID_CONFIG, UNHEALTHY, PHASE_ERRORS = 0, 1, 2, 3, 4
+# Provider connectors for the runtime the CLI builds: None is the real providers. (A seam
+# for tests, which substitute a fake Gmail API; never set in production code.)
+CONNECTORS: ProviderConnectors | None = None
 TICKS = ("tick", "reconcile", "campaign-tick", "follow-up-tick", "dispatch-tick")
 EXECUTION = ("execution-plan", "execution-queue", "execution-metrics", "execution-pass")
 
 
 def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.runtime", description="AI sales agent one-shot runtime commands")
-    parser.add_argument("command", choices=("init", "health", "provider-status", *TICKS, *EXECUTION))
+    parser.add_argument("command", choices=("init", "health", "provider-status", "gmail-auth", "email-sync", *TICKS,
+                                            *EXECUTION))
+    parser.add_argument("--recover", action="store_true", help="email-sync only: re-establish an expired cursor")
     parser.add_argument("--dispatch-approved", action="store_true",
                         help="tick / execution-pass only: also dispatch approved messages")
     parser.add_argument("--lead-id", help="execution-plan: the lead to plan")
@@ -73,6 +86,8 @@ def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
         return INVALID_CONFIG
     if args.command == "health":
         return _health(config.database_path, out)
+    if args.command == "gmail-auth":
+        return _gmail_auth(config, out)
     if args.command == "execution-plan" and not args.lead_id:
         _emit(out, {"error": "LEAD_ID_REQUIRED"})
         return INVALID_CONFIG
@@ -81,7 +96,7 @@ def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
         _emit(out, {"error": "DATABASE_MISSING", "hint": "run 'init' first"})
         return UNHEALTHY
 
-    runtime = SalesAgentRuntime(config, clock=clock)
+    runtime = SalesAgentRuntime(config, clock=clock, connectors=CONNECTORS)
     try:
         startup = runtime.start()
     except StartupError as exc:
@@ -93,6 +108,10 @@ def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
             return OK
         if args.command in EXECUTION:
             return _execution(runtime, args, out)
+        if args.command == "email-sync":
+            synced = runtime.email_sync(recover=args.recover)
+            _emit(out, synced.model_dump(mode="json"))
+            return PHASE_ERRORS if synced.status.value in ("ERROR", "RECOVERY_REQUIRED") else OK
         result: BaseModel = {
             "tick": lambda: runtime.tick(dispatch_approved=args.dispatch_approved),
             "reconcile": runtime.reconcile,
@@ -125,6 +144,25 @@ def _execution(runtime: SalesAgentRuntime, args: argparse.Namespace, out: TextIO
     result: ExecutionPassResult = runtime.execution_pass(dispatch_approved=args.dispatch_approved)
     _emit(out, result.model_dump(mode="json"))
     return PHASE_ERRORS if result.count(ExecutionOutcome.ERROR) else OK
+
+
+def _gmail_auth(config: RuntimeConfig, out: TextIO) -> int:
+    """Only when Gmail is selected; prints the outcome code and the mailbox, never a token."""
+    if config.integrations.email.provider.value != "GMAIL":
+        _emit(out, {"error": "GMAIL_NOT_SELECTED"})
+        return INVALID_CONFIG
+    from app.integrations.gmail import auth as gmail_auth
+    from app.integrations.gmail import provider as gmail_provider
+    from app.integrations.gmail.errors import GmailError
+
+    try:
+        mailbox = gmail_provider.authorize_mailbox(config.integrations.email, config.secrets.gmail,
+                                                   flow=gmail_auth.run_installed_app_flow, api_factory=gmail_provider.real_api)
+    except GmailError as exc:
+        _emit(out, {"error": "GMAIL_AUTHORIZATION_FAILED", "code": exc.code.value})
+        return UNHEALTHY
+    _emit(out, {"authorized": True, "mailbox": mailbox})
+    return OK
 
 
 def _provider_status(environ: Mapping[str, str], clock: SystemClock, out: TextIO) -> int:

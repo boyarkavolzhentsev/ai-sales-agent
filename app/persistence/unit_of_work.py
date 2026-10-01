@@ -18,6 +18,7 @@ from app.persistence.repositories.protocols import (
     KnowledgeSourceMetaRepository,
     LeadQualificationRepository,
     LeadRepository,
+    MailboxSyncRepository,
     OperatorCommandRepository,
     OperatorResponseRepository,
     OpportunityRepository,
@@ -50,6 +51,7 @@ from app.persistence.repositories.sqlite import (
     SqliteKnowledgeSourceMetaRepository,
     SqliteLeadQualificationRepository,
     SqliteLeadRepository,
+    SqliteMailboxSyncRepository,
     SqliteOperatorCommandRepository,
     SqliteOperatorResponseRepository,
     SqliteOpportunityRepository,
@@ -102,6 +104,8 @@ class UnitOfWork:
         self.term_requests = SqliteTermRequestRepository(tx)
         self.objections = SqliteObjectionRepository(tx)
         self.commercial_signals = SqliteCommercialSignalRepository(tx)
+        # Inbound mailbox synchronization (Stage 16).
+        self.mailbox_sync: MailboxSyncRepository = SqliteMailboxSyncRepository(tx)
 
     def savepoint(self) -> AbstractContextManager[None]:
         """All-or-nothing sub-unit: writes inside it are undone if it raises, while the

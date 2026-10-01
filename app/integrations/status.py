@@ -8,7 +8,12 @@ States:
                    settings/secrets; problems name each variable and a code
   NOT_IMPLEMENTED  valid configuration, but no adapter exists yet: the capability stays
                    unavailable
-  CONFIGURED       valid configuration and an implementation: usable
+  AUTH_REQUIRED    valid configuration and an implementation, but no usable local
+                   authorization (Gmail without a usable token): run the provider's explicit
+                   authorization command; the capability stays unavailable
+  CONFIGURED       valid configuration, an implementation and (where needed) a local
+                   authorization: usable. Connectivity is checked only when the runtime
+                   builds the adapters, never here.
 
 A production deployment is ready only when every required category is CONFIGURED.
 """
@@ -44,7 +49,7 @@ TELEGRAM_TOKEN = re.compile(r"^\d{3,}:[A-Za-z0-9_-]{20,}$")
 VARIABLES: dict[tuple[str, str], str] = {
     ("email", "provider"): "EMAIL_PROVIDER", ("email", "address"): "GMAIL_ADDRESS",
     ("email", "credentials_file"): "GMAIL_CREDENTIALS_FILE", ("email", "token_file"): "GMAIL_TOKEN_FILE",
-    ("email", "poll_interval_seconds"): "GMAIL_POLL_INTERVAL_SECONDS",
+    ("email", "poll_interval_seconds"): "GMAIL_POLL_INTERVAL_SECONDS", ("email", "timeout_seconds"): "GMAIL_TIMEOUT_SECONDS",
     ("llm", "provider"): "LLM_PROVIDER", ("llm", "model"): "LLM_MODEL", ("llm", "timeout_seconds"): "LLM_TIMEOUT_SECONDS",
     ("operator", "provider"): "OPERATOR_PROVIDER", ("operator", "operator_chat_ids"): "TELEGRAM_OPERATOR_CHAT_IDS",
     ("knowledge", "provider"): "KNOWLEDGE_PROVIDER", ("knowledge", "directory"): "KNOWLEDGE_DIR",
@@ -63,6 +68,7 @@ class ProviderState(StrEnum):
     DISABLED = "DISABLED"
     INVALID = "INVALID"
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
+    AUTH_REQUIRED = "AUTH_REQUIRED"
     CONFIGURED = "CONFIGURED"
 
 
@@ -74,6 +80,9 @@ class ProviderStatus(CoreModel):
     state: ProviderState
     configuration_valid: bool
     implemented: bool
+    # Local authorization where the provider needs one (Gmail): AUTHORIZED, AUTH_REQUIRED
+    # or AUTH_INVALID. None when not applicable.
+    authorization: str | None = None
     capability_available: bool
     problems: tuple[str, ...] = ()  # "SALES_AGENT_<VAR>: <CODE>"
     warnings: tuple[str, ...] = ()
@@ -106,21 +115,38 @@ def evaluate(config: IntegrationConfig, secrets: ProviderSecrets, *, mailboxes: 
     for category, provider in selected(config):
         own = tuple(dict.fromkeys(p.render() for p in problems if p.category is category))
         implemented = is_implemented(category, provider)
+        authorization = _authorization(config, secrets) if category is P.EMAIL and not own else None
         if own:
             state = ProviderState.INVALID
         elif provider == "NONE":
             state = ProviderState.DISABLED
+        elif not implemented:
+            state = ProviderState.NOT_IMPLEMENTED
+        elif authorization not in (None, "AUTHORIZED"):
+            state = ProviderState.AUTH_REQUIRED
+            code = C.AUTH_REQUIRED if authorization == "AUTH_REQUIRED" else C.AUTH_INVALID
+            warnings.append(_problem(category, code, "GMAIL_TOKEN_FILE"))
         else:
-            state = ProviderState.CONFIGURED if implemented else ProviderState.NOT_IMPLEMENTED
+            state = ProviderState.CONFIGURED
         statuses.append(ProviderStatus(
             category=category, provider=provider, state=state, configuration_valid=not own, implemented=implemented,
-            capability_available=state is ProviderState.CONFIGURED, problems=own,
+            authorization=authorization, capability_available=state is ProviderState.CONFIGURED, problems=own,
             warnings=tuple(dict.fromkeys(w.render() for w in warnings if w.category is category))))
     blockers = tuple(f"{s.category.value}:{s.state.value}" for s in statuses
                      if s.category in PRODUCTION_REQUIRED and s.state is not ProviderState.CONFIGURED)
     valid = all(s.configuration_valid for s in statuses)
     return IntegrationStatus(providers=tuple(statuses), valid=valid, production_ready=valid and not blockers,
                              production_blockers=blockers, fingerprint=config.fingerprint())
+
+
+def _authorization(config: IntegrationConfig, secrets: ProviderSecrets) -> str | None:
+    """Gmail's local authorization (token file / refresh secret): no network, no Google
+    library, and the OAuth client file is not read."""
+    if config.email.provider is not EmailProviderId.GMAIL or config.email.token_file is None:
+        return None
+    from app.integrations.gmail.tokens import local_authorization
+
+    return local_authorization(config.email.token_file, refresh_secret=secrets.gmail.refresh_token is not None).value
 
 
 def _problem(category: ProviderCategory, code: IntegrationCode, variable: str) -> IntegrationProblem:

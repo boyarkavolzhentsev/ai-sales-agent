@@ -24,6 +24,7 @@ from app.persistence.schema import (
     V7_CAMPAIGN_EXECUTION_SCHEMA,
     V8_SALES_PIPELINE_SCHEMA,
     V9_COMMERCIAL_SCHEMA,
+    V10_EMAIL_PROVIDER_SYNC_SCHEMA,
 )
 from app.persistence.serialization import to_utc_text
 
@@ -103,6 +104,11 @@ def v9_commercial(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def v10_email_provider_sync(connection: sqlite3.Connection) -> None:
+    for statement in V10_EMAIL_PROVIDER_SYNC_SCHEMA:
+        connection.execute(statement)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial_schema", v1_initial_schema),
     Migration(2, "quota_reservations", v2_quota_reservations),
@@ -113,6 +119,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(7, "campaign_execution", v7_campaign_execution),
     Migration(8, "sales_pipeline", v8_sales_pipeline),
     Migration(9, "commercial_decisioning", v9_commercial),
+    Migration(10, "email_provider_sync", v10_email_provider_sync),
 )
 
 

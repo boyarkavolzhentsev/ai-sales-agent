@@ -33,6 +33,8 @@ class EmailProviderConfig(CoreModel):
     credentials_file: Path | None = None
     token_file: Path | None = None
     poll_interval_seconds: Annotated[int, Field(ge=15, le=3600)] = 60
+    # Bound of every Gmail API call (connect and read).
+    timeout_seconds: Annotated[int, Field(ge=1, le=120)] = 30
 
 
 class LLMProviderConfig(CoreModel):

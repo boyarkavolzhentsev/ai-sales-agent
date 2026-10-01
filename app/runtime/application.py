@@ -32,9 +32,10 @@ from app.persistence import MEMORY, Clock, Database, PersistenceError, SchemaVer
 from app.persistence.migrations import latest_version
 from app.runtime import workers
 from app.runtime.config import RuntimeConfig
-from app.integrations import IntegrationStatus, evaluate
+from app.integrations import IntegrationStatus, ProviderConnectors, ProviderState, ProviderUnavailableError, evaluate
+from app.integrations.mailbox import MailboxSyncResult, SyncStatus
 from app.runtime.config import RuntimeMode
-from app.runtime.container import Adapters, Capabilities, Services, build_services, configured_adapters
+from app.runtime.container import Adapters, Capabilities, Services, build_services, configured_adapters, offline_adapters
 from app.runtime.errors import CapabilityUnavailableError, RuntimeBusyError, RuntimeNotReadyError, StartupError
 from app.runtime.recovery import inspect_recovery
 from app.runtime.results import (
@@ -54,13 +55,17 @@ SHUTTING_DOWN = "SHUTTING_DOWN"
 
 
 class SalesAgentRuntime:
-    def __init__(self, config: RuntimeConfig, *, adapters: Adapters | None = None, clock: Clock | None = None) -> None:
+    def __init__(self, config: RuntimeConfig, *, adapters: Adapters | None = None, clock: Clock | None = None,
+                 connectors: ProviderConnectors | None = None) -> None:
         self._config = config
-        # Injected adapters (programmatic composition, tests) take precedence over the
-        # configured providers; neither path performs I/O here.
-        self._adapters = adapters or configured_adapters(config)
+        # Injected adapters (programmatic composition, tests); a selected provider's own
+        # adapters are built at start() (they may read a token and contact the provider),
+        # never here, and replace the injected ones of their category.
+        self._injected = adapters
+        self._connectors = connectors
+        self._adapters = adapters or offline_adapters()
         self._clock = clock or SystemClock()
-        self._capabilities = Capabilities.of(self._adapters)
+        self._capabilities = Capabilities.of(Adapters()) if adapters is None else Capabilities.of(adapters)
         self._db = Database(config.database_path)
         self._services: Services | None = None
         self._state = S.CREATED
@@ -87,6 +92,7 @@ class SalesAgentRuntime:
         self._state = S.STARTING
         try:
             self._check_integrations()
+            self._build_provider_adapters()
             self._check_database_path()
             self._db.connect()
             version = self._db.initialize_schema(self._clock)
@@ -206,10 +212,23 @@ class SalesAgentRuntime:
         with self._work() as services:
             if services.inbound is None:
                 raise CapabilityUnavailableError("inbound processing needs an LLM transport")
-            result = services.inbound.process(envelope, correlation_id=correlation_id)
-            services.pipeline.record_inbound(result, correlation_id=correlation_id)
-            services.commercial.record_inbound(result, correlation_id=correlation_id)
-            return result
+            return _process_inbound(services, envelope, correlation_id)
+
+    def email_sync(self, *, limit: int | None = None, recover: bool = False,
+                   correlation_id: str | None = None) -> MailboxSyncResult:
+        """One bounded inbound mailbox pass (Stage 16): new provider messages go through
+        the same path as ``handle_inbound``. The first pass only sets the cursor (no mailbox
+        replay); ``recover=True`` explicitly re-establishes an expired cursor. Without inbound
+        processing (no LLM provider yet) the cursor can be set, nothing is read past it."""
+        with self._work() as services:
+            sync = services.mailbox_sync
+            if sync is None:
+                return MailboxSyncResult(status=SyncStatus.SKIPPED, reason="EMAIL_SYNC_NOT_CONFIGURED", mailbox="")
+            correlation = correlation_id or self._correlation("email-sync")
+            handler = None
+            if services.inbound is not None:
+                handler = lambda envelope: _process_inbound(services, envelope, correlation)  # noqa: E731
+            return sync.sync_once(handler, limit=limit or self._config.worker.batch_limit, recover=recover)
 
     # ---- Sales execution coordination (Stage 14) ------------------------------------------------
 
@@ -275,8 +294,20 @@ class SalesAgentRuntime:
         if not status.valid:
             problems = [problem for provider in status.providers for problem in provider.problems]
             raise StartupError("INTEGRATION_CONFIG_INVALID", "; ".join(problems))
+        email = next(p for p in status.providers if p.category.value == "EMAIL")
+        if email.state is ProviderState.AUTH_REQUIRED:  # actionable, before the database is touched
+            raise StartupError("EMAIL_AUTH_REQUIRED", "run: python -m app.runtime gmail-auth")
         if self._config.mode is RuntimeMode.PRODUCTION and not status.production_ready:
             raise StartupError("PRODUCTION_NOT_READY", ", ".join(status.production_blockers))
+
+    def _build_provider_adapters(self) -> None:
+        """Selected providers' adapters (Gmail: token load/refresh, account check). A
+        provider that cannot be used fails startup with a stable code; no OAuth flow starts."""
+        try:
+            self._adapters = configured_adapters(self._config, self._injected, self._connectors)
+        except ProviderUnavailableError as exc:
+            raise StartupError(f"{exc.category.value}_PROVIDER_UNAVAILABLE", exc.code) from None
+        self._capabilities = Capabilities.of(self._adapters)
 
     def _check_database_path(self) -> None:
         if self._config.database_path == MEMORY:
@@ -297,7 +328,16 @@ class SalesAgentRuntime:
 
     def _capability_report(self) -> CapabilityReport:
         return CapabilityReport(dispatch=self._capabilities.dispatch, reconciliation=self._capabilities.reconciliation,
-                                inbound=self._capabilities.inbound)
+                                inbound=self._capabilities.inbound, email_sync=self._capabilities.email_sync)
+
+
+def _process_inbound(services: Services, envelope: InboundEnvelope, correlation_id: str) -> InboundResult:
+    """Stage 6, then the Stage 12 and Stage 13 hooks, each its own step (all idempotent)."""
+    assert services.inbound is not None
+    result = services.inbound.process(envelope, correlation_id=correlation_id)
+    services.pipeline.record_inbound(result, correlation_id=correlation_id)
+    services.commercial.record_inbound(result, correlation_id=correlation_id)
+    return result
 
 
 def _stamp(now: datetime) -> str:

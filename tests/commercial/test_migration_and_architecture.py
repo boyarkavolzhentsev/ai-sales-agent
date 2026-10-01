@@ -21,9 +21,9 @@ APP = Path(__file__).resolve().parents[2] / "app"
 def test_fresh_database_reaches_v9(db_path: Path) -> None:
     raw = sqlite3.connect(db_path)
     try:
-        assert current_version(raw) == latest_version() == len(MIGRATIONS) == 9
+        assert current_version(raw) == latest_version() == len(MIGRATIONS) >= 9
         names = {r[0] for r in raw.execute("SELECT name FROM sqlite_master")}
-        assert MIGRATIONS[-1].name == "commercial_decisioning"
+        assert MIGRATIONS[8].name == "commercial_decisioning"
     finally:
         raw.close()
     assert {"proposal_revisions", "commercial_terms", "commercial_term_requests", "objections", "commercial_signals",
@@ -43,8 +43,8 @@ def test_a_v8_database_upgrades_with_its_pipeline_data_intact(tmp_path: Path) ->
         lead_id = opportunity_lead(db)
         opportunity_id = active_opportunity(db, lead_id).opportunity_id
     with Database(path) as db:
-        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=1))) == 9
-        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=2))) == 9
+        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=1))) == latest_version()
+        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=2))) == latest_version()
         q = qualification(db, lead_id)
         assert q is not None and q.status is QualificationStatus.QUALIFIED
         assert active_opportunity(db, lead_id).status is OpportunityStatus.OPEN
@@ -136,4 +136,4 @@ def test_no_float_arithmetic_on_money() -> None:
 def test_no_new_external_dependencies() -> None:
     lines = [line.strip() for line in (APP.parent / "requirements.txt").read_text(encoding="utf-8").splitlines()]
     assert [line.split(">")[0].split("<")[0].split("=")[0] for line in lines if line and not line.startswith("#")] == [
-        "pydantic", "tzdata", "PyYAML"]
+        "pydantic", "tzdata", "PyYAML", "google-auth[requests]", "google-auth-oauthlib"]  # Stage 16: Gmail OAuth only

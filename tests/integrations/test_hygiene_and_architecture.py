@@ -21,7 +21,9 @@ SENSITIVE = (".env", ".env.*", ".local/", "*.pem", "*.key", "*.p12", "client_sec
 NETWORK = ("socket", "ssl", "http", "urllib", "requests", "httpx", "aiohttp", "smtplib", "imaplib", "poplib", "email",
            "googleapiclient", "google", "google_auth_oauthlib", "telegram", "aiogram", "openai", "anthropic", "asyncio",
            "threading", "subprocess")
-MAY_IMPORT = ("app.core", "app.integrations", "app.dispatch", "app.llm", "app.operator")
+# The provider-neutral mailbox sync (Stage 16) also uses persistence and the inbound envelope.
+MAY_IMPORT = ("app.core", "app.integrations", "app.dispatch", "app.llm", "app.operator", "app.persistence",
+              "app.inbound.models")
 
 
 def imports(path: Path) -> list[str]:
@@ -97,7 +99,8 @@ def test_only_the_runtime_depends_on_the_integration_layer() -> None:
 
 
 def test_no_schema_change() -> None:
-    assert latest_version() == len(MIGRATIONS) == 9 and MIGRATIONS[-1].name == "commercial_decisioning"
+    # Stage 15 changed no schema; v10 is Stage 16's provider-neutral mailbox sync.
+    assert MIGRATIONS[8].name == "commercial_decisioning" and latest_version() == len(MIGRATIONS) == 10
 
 
 def test_no_real_secret_shapes_in_tracked_text() -> None:

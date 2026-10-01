@@ -62,7 +62,9 @@ def test_production_is_a_mode_and_it_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(StartupError) as error:
         app.start()
     assert error.value.code == "PRODUCTION_NOT_READY" and app.state is RuntimeState.FAILED
-    assert str(error.value) == "PRODUCTION_NOT_READY: EMAIL:NOT_IMPLEMENTED, LLM:NOT_IMPLEMENTED, OPERATOR_CHANNEL:NOT_IMPLEMENTED"
+    # Gmail is implemented and (via the refresh secret) authorized since Stage 16; LLM and
+    # Telegram are not, so production still fails closed.
+    assert str(error.value) == "PRODUCTION_NOT_READY: LLM:NOT_IMPLEMENTED, OPERATOR_CHANNEL:NOT_IMPLEMENTED"
     assert not (tmp_path / "agent.sqlite3").exists()  # refused before touching the database
 
 
@@ -70,11 +72,14 @@ def test_production_is_a_mode_and_it_fails_closed(tmp_path: Path) -> None:
 
 
 def test_selected_but_unimplemented_providers_never_become_capabilities(tmp_path: Path) -> None:
-    app = SalesAgentRuntime(load_config(full_env(tmp_path), now=NOW))
+    from tests.gmail.builders import connectors
+    from tests.gmail.fakes import FakeGmailApi
+    app = SalesAgentRuntime(load_config(full_env(tmp_path), now=NOW), connectors=connectors(FakeGmailApi()))
     report = app.start()
-    assert (report.capabilities.dispatch, report.capabilities.reconciliation, report.capabilities.inbound) == (False, False, False)
+    # Gmail (implemented, Stage 16) is a capability; LLM and Telegram stay unavailable.
+    assert (report.capabilities.dispatch, report.capabilities.reconciliation, report.capabilities.inbound) == (True, True, False)
     states = {p.category: p.state for p in report.integrations.providers}
-    assert states == {P.EMAIL: S.NOT_IMPLEMENTED, P.LLM: S.NOT_IMPLEMENTED, P.OPERATOR_CHANNEL: S.NOT_IMPLEMENTED,
+    assert states == {P.EMAIL: S.CONFIGURED, P.LLM: S.NOT_IMPLEMENTED, P.OPERATOR_CHANNEL: S.NOT_IMPLEMENTED,
                       P.KNOWLEDGE: S.CONFIGURED, P.EMBEDDINGS: S.DISABLED}
     assert app.health().integrations == report.integrations and app.health().ready
     assert app.campaign_tick().status.value == "OK"  # the offline runtime works exactly as before
@@ -128,8 +133,9 @@ def test_provider_status_reports_without_a_database(tmp_path: Path) -> None:
     integrations = report["integrations"]
     assert isinstance(integrations, dict)
     rows = {row["category"]: row for row in integrations["providers"]}  # type: ignore[index]
-    assert (rows["EMAIL"]["provider"], rows["EMAIL"]["state"], rows["EMAIL"]["capability_available"]) == (
-        "GMAIL", "NOT_IMPLEMENTED", False)
+    assert (rows["EMAIL"]["provider"], rows["EMAIL"]["state"], rows["EMAIL"]["authorization"]) == (
+        "GMAIL", "CONFIGURED", "AUTHORIZED")  # locally: the refresh secret; nothing was contacted
+    assert (rows["LLM"]["state"], rows["LLM"]["capability_available"]) == ("NOT_IMPLEMENTED", False)
 
 
 def test_provider_status_names_invalid_configuration(tmp_path: Path) -> None:

@@ -5,3 +5,9 @@ pydantic>=2,<3
 tzdata>=2024.1
 # YAML front matter / fact documents for the knowledge base. Used only via safe loading.
 PyYAML>=6,<7
+# Gmail provider (Stage 16): Google's official OAuth 2.0 credentials, token refresh and its
+# HTTP transport (AuthorizedSession, used with retries disabled), and the installed-app
+# authorization flow. No Gmail client library: the few REST calls are made explicitly so a
+# send is never retried behind Stage 8's back.
+google-auth[requests]>=2.40,<3
+google-auth-oauthlib>=1.2,<2

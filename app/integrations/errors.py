@@ -17,6 +17,8 @@ class IntegrationCode(StrEnum):
     CREDENTIAL_FILE_MISSING = "CREDENTIAL_FILE_MISSING"
     CREDENTIAL_FILE_UNREADABLE = "CREDENTIAL_FILE_UNREADABLE"
     CREDENTIAL_FILE_PERMISSIONS_BROAD = "CREDENTIAL_FILE_PERMISSIONS_BROAD"  # a warning, POSIX only
+    AUTH_REQUIRED = "AUTH_REQUIRED"  # a warning: implemented and valid, not authorized yet
+    AUTH_INVALID = "AUTH_INVALID"  # a warning: the local authorization cannot be used
 
 
 class IntegrationProblem(CoreModel):

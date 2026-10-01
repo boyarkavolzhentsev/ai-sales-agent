@@ -145,3 +145,58 @@ class DispatchAttempt(CoreModel):
         ensure_not_before(self.late_acceptance_at, self.claimed_at, "late_acceptance_at", "claimed_at")
         ensure_not_before(self.resolved_at, self.claimed_at, "resolved_at", "claimed_at")
         return self
+
+
+class MailboxSyncStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    # The provider no longer serves changes since the cursor (e.g. Gmail history expired):
+    # only an explicit recovery establishes a new cursor; nothing is replayed silently.
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+
+
+class MailboxSyncState(CoreModel):
+    """The inbound synchronization cursor of one provider mailbox. ``cursor`` is an
+    opaque provider position (a Gmail historyId); changes after it are not yet handled.
+    Infrastructure only: no token, credential or message content."""
+
+    state_id: EntityId
+    provider: NonEmptyStr
+    mailbox: EmailAddress
+    cursor: NonEmptyStr
+    status: MailboxSyncStatus = MailboxSyncStatus.ACTIVE
+    # Bumped by every explicit (re)initialization of the cursor.
+    generation: PositiveInt = 1
+    last_synced_at: AwareDatetime | None = None
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    version: Version = 1
+
+
+class MailboxSyncFailureStatus(StrEnum):
+    OPEN = "OPEN"
+    RESOLVED = "RESOLVED"
+
+
+class MailboxSyncFailure(CoreModel):
+    """A provider message whose processing failed. Recorded before the cursor moves past
+    it, retried by later syncs, never deleted: one bad message neither blocks nor loses
+    later mail. Stores the provider message id and an error code only."""
+
+    failure_id: EntityId
+    provider: NonEmptyStr
+    mailbox: EmailAddress
+    provider_message_id: NonEmptyStr
+    status: MailboxSyncFailureStatus = MailboxSyncFailureStatus.OPEN
+    attempts: PositiveInt = 1
+    last_error_code: NonEmptyStr
+    first_failed_at: AwareDatetime
+    last_failed_at: AwareDatetime
+    resolved_at: AwareDatetime | None = None
+    version: Version = 1
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if (self.status is MailboxSyncFailureStatus.RESOLVED) != (self.resolved_at is not None):
+            raise ValueError("resolved_at is required for, and only allowed on, RESOLVED")
+        ensure_not_before(self.last_failed_at, self.first_failed_at, "last_failed_at", "first_failed_at")
+        return self
