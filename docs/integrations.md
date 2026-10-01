@@ -1,7 +1,8 @@
 # Integration configuration
 
 Stage 15 added the configuration foundation real providers plug into; Stage 16 added the
-first real provider, **Gmail**; Stage 17 added **Telegram** as the operator channel. Selecting a provider that is not implemented yet validates
+first real provider, **Gmail**; Stage 17 added **Telegram** as the operator channel; Stage 18
+added the live **LLM** providers (OpenAI, Anthropic, Gemini). Selecting a provider that is not implemented yet validates
 its configuration and reports `NOT_IMPLEMENTED`; its capability stays unavailable and
 nothing contacts it.
 
@@ -10,7 +11,7 @@ nothing contacts it.
 | Category | Variable | Provider IDs | Implemented |
 |---|---|---|---|
 | Email | `SALES_AGENT_EMAIL_PROVIDER` | `NONE`, `GMAIL` | `GMAIL` (Stage 16) |
-| LLM | `SALES_AGENT_LLM_PROVIDER` | `NONE`, `OPENAI`, `ANTHROPIC`, `GEMINI` | none |
+| LLM | `SALES_AGENT_LLM_PROVIDER` | `NONE`, `OPENAI`, `ANTHROPIC`, `GEMINI` | all three (Stage 18) |
 | Operator channel | `SALES_AGENT_OPERATOR_PROVIDER` | `NONE`, `TELEGRAM` | `TELEGRAM` (Stage 17) |
 | Knowledge | `SALES_AGENT_KNOWLEDGE_PROVIDER` | `LOCAL` | `LOCAL` (the local approved-knowledge index) |
 | Embeddings | `SALES_AGENT_EMBEDDINGS_PROVIDER` | `NONE` | not applicable |
@@ -24,8 +25,10 @@ is not selected is rejected with `PROVIDER_NOT_SELECTED`):
   `GMAIL_CLIENT_SECRET`. Optional: `GMAIL_REFRESH_TOKEN` (secret; bootstraps a token file
   on headless machines), `GMAIL_POLL_INTERVAL_SECONDS` (15-3600, default 60),
   `GMAIL_TIMEOUT_SECONDS` (bound of every Gmail API call, 1-120, default 30).
-- **OPENAI / ANTHROPIC / GEMINI**: `LLM_MODEL`, the secret `LLM_API_KEY`; optional
-  `LLM_TIMEOUT_SECONDS` (1-300, default 30).
+- **OPENAI / ANTHROPIC / GEMINI**: `LLM_MODEL` (the provider's model id, e.g.
+  `gpt-4.1-mini`, `claude-sonnet-4-5`, `gemini-2.5-flash`; letters, digits and `._:@-` only),
+  the secret `LLM_API_KEY`; optional `LLM_TIMEOUT_SECONDS` (1-300, default 30) and
+  `LLM_MAX_OUTPUT_TOKENS` (256-32768, default 4096).
 - **TELEGRAM**: the secret `TELEGRAM_BOT_TOKEN` (shape `<digits>:<token>`),
   `TELEGRAM_OPERATOR_CHAT_IDS` (comma-separated `<telegram user id>=<operator id>` pairs:
   private chats only, where the chat id equals the user id; each operator id must be one
@@ -94,9 +97,13 @@ configuration; rotating a secret does not change it.
   touched); a Telegram token that `getMe` refuses stops startup with
   `OPERATOR_CHANNEL_PROVIDER_UNAVAILABLE`; `NOT_IMPLEMENTED` only leaves the capability
   unavailable.
-- `production`: startup is refused (`PRODUCTION_NOT_READY`) unless email, LLM, operator
-  channel and knowledge are all `CONFIGURED`. No LLM provider is implemented yet, so
-  production still fails closed (`PRODUCTION_NOT_READY: LLM:NOT_IMPLEMENTED`).
+- `production`: startup is refused (`PRODUCTION_NOT_READY: <category>:<state>, ...`) unless
+  email, LLM, operator channel and knowledge are all `CONFIGURED`. Since Stage 18 every
+  required category has an implementation, so a deployment with Gmail, Telegram, an LLM and
+  LOCAL knowledge all configured starts in production (Gmail and Telegram are still verified
+  at startup and fail it if unusable). This removes no safety gate: every outbound message
+  still needs an operator's Stage 7 approval (auto-reply stays disabled), operators
+  authenticate only through Telegram, and the kill switch, quotas and send window apply.
 
 ## Gmail (Stage 16)
 
@@ -262,6 +269,93 @@ Nothing below runs in the test suite; it contacts Telegram only when you run it.
    "Already handled." or "changed since the card was sent" without a second change.
 8. From another Telegram account (or a group) the bot must answer "Not authorized." or
    nothing at all.
+
+## LLM providers (Stage 18)
+
+**What it is.** A text-generation/extraction service behind the existing `LLMTransport`
+contract. The model classifies, extracts, drafts and suggests; it never decides. Every
+output is a typed proposal validated by deterministic code, and every business change
+still goes through the existing services (Stage 6/7/8/12/13/14): the model cannot approve,
+send, mark WON/LOST, add do-not-contact, set a term or move a lead.
+
+**Adapters.** OpenAI (Responses API), Anthropic (Messages API) and Gemini
+(`generateContent`), called directly over HTTPS with `requests` (no vendor SDK, no
+framework): one request per call, no tools, no web search/grounding, no streaming, no
+provider-side storage (`store: false` on OpenAI). The configured provider and model are
+always used: there is no fallback to another provider or model.
+
+**Requests.** The versioned prompt (in code: `app/llm/prompts.py`, `app/ai/prompts.py`) is
+the system prompt, followed by the output JSON schema; data sections (customer text marked
+UNTRUSTED_DATA, approved knowledge as TRUSTED_EVIDENCE) form one user message. Inputs are
+bounded (customer text 8000 characters for extraction, 60000 characters per request);
+outputs by `LLM_MAX_OUTPUT_TOKENS`. Temperature: 0 for classification/extraction/advice,
+0.3 for reply drafts, 0.2 for summaries (not sent to OpenAI, whose reasoning models refuse
+it).
+
+**Validation.** Strict JSON parsing (only an exact outer ```` ```json ```` fence is removed),
+strict schema validation (unknown fields, missing fields, unknown enum values and wrong
+types are rejected, never repaired), then the existing contract checks (cited evidence
+must be evidence that was supplied; the draft claim check; allowed next steps).
+Extraction (qualification facts, commercial requests, objections, acceptance/decline) must
+quote the customer's own words: a quote that is not in the message, or a number/amount/
+currency the customer did not write, refuses the whole output. Customer requests (e.g.
+"Can you do 999 EUR?") are recorded as requests for an operator, never as terms.
+
+**Failures.** Stable codes: `AUTH_INVALID`, `RATE_LIMITED`, `QUOTA_EXCEEDED`,
+`MODEL_NOT_FOUND`, `BAD_REQUEST`, `INPUT_TOO_LARGE`, `CONTENT_BLOCKED`,
+`TEMPORARY_PROVIDER_ERROR`, `TIMEOUT`, `NETWORK_ERROR`, `INVALID_RESPONSE`,
+`OUTPUT_TRUNCATED`, `SCHEMA_VALIDATION_FAILED`, `CONTRACT_VIOLATION`. At most one extra
+attempt, only when the first certainly produced nothing (connection never established, or
+503/529 "overloaded"); timeouts, 429s and other errors are not retried within a call. Every failure fails
+closed with the existing semantics: Stage 6 records the inbound message and escalates it
+to an operator (no draft), a failed qualification/commercial extraction changes nothing
+and is retried later by its durable job if the cause was transient (below). No fabricated fallback.
+
+**Durable enrichment (qualification and commercial extraction).** Each customer message
+with a lead gets one job per configured extraction (`ai_enrichment_jobs`, schema v12,
+identified by task + message). Inbound processing creates the jobs and makes one inline
+attempt; every attempt first claims the job (a compare-and-set with a 15-minute lease), so
+concurrent processes never call the model twice for one job. The claim holder runs the
+existing Stage 12/13 hook (which validates and applies through the existing rules and
+idempotency) and settles the job:
+- `COMPLETED`: applied, already applied, or skipped by the hook; never run again;
+- `RETRY_WAIT`: `RATE_LIMITED`, `TEMPORARY_PROVIDER_ERROR`, `TIMEOUT` or `NETWORK_ERROR`;
+  claimable again after 5 min, 30 min, 2 h, then 6 h;
+- `FAILED_FINAL`: any other code (`AUTH_INVALID`, `MODEL_NOT_FOUND`, `BAD_REQUEST`,
+  `CONTENT_BLOCKED`, `SCHEMA_VALIDATION_FAILED`, `CONTRACT_VIOLATION`, ...) or the 5th failed
+  attempt; nothing is applied or invented, and Telegram `/status` shows the count.
+
+`python -m app.runtime ai-recovery-tick` (one bounded pass, worker batch limit, no daemon)
+runs the due jobs from the stored Stage 6 result: no mailbox redelivery, cursor rewind or
+re-sent envelope is needed, and jobs survive restarts. A claim abandoned by a crash is taken
+over when its lease expires. Run it from the same scheduler as the other ticks. Jobs hold
+ids, codes and times only. Stage 6 itself keeps its semantics: a failed classification or
+draft still escalates the message to an operator (no automatic retry of drafting).
+
+**Startup and status.** No request is made at startup or by `provider-status` (no tokens
+spent): a valid selection is `CONFIGURED`; the first real request proves the key (a refused
+key then fails that request with `AUTH_INVALID`).
+
+**Logging and storage.** Logs carry provider, model, task, outcome code, latency, attempt,
+the provider's request id and token counts; never prompts, customer text, outputs or the
+key. Nothing new is stored: prompts and raw responses are not persisted; the existing
+provenance records keep the prompt id/version, the model reported by the provider and
+input/output hashes.
+
+### Manual live smoke test
+
+Nothing below runs in the test suite. It makes billable requests; use a mailbox and a
+recipient you control, never a real prospect.
+
+1. Choose one provider; set `SALES_AGENT_LLM_PROVIDER`, `SALES_AGENT_LLM_MODEL` and
+   `SALES_AGENT_LLM_API_KEY` (environment or a gitignored file under `.local/`).
+2. `python -m app.runtime provider-status` - LLM `CONFIGURED` (no request is made).
+3. `python -m app.runtime init` (Gmail and Telegram as in their sections).
+4. From an address you control, send one email to the configured mailbox (e.g. a
+   question your approved knowledge answers), then `python -m app.runtime email-sync`.
+5. `python -m app.runtime operator-sync`: the review card shows the drafted reply.
+6. Approve it in Telegram, run `operator-sync`, then `python -m app.runtime dispatch-tick`
+   (or `execution-pass --dispatch-approved`): Gmail sends it.
 
 ## Deployments
 

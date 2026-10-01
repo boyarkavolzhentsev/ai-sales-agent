@@ -184,6 +184,12 @@ class InboundService:
 
     # ---- entry point ----------------------------------------------------------------------
 
+    def final_result(self, message_id: str) -> InboundResult | None:
+        """The stored final outcome of a processed message (what a replay returns). Read-only:
+        lets later work (e.g. AI enrichment recovery) continue without a redelivery."""
+        with self._db.transaction() as uow:
+            return _load_final(uow, message_id)
+
     def process(self, envelope: InboundEnvelope, *, correlation_id: str) -> InboundResult:
         observation = self._observe(envelope, correlation_id)
         if observation.final is not None:

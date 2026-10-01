@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field, PositiveInt
+from pydantic import Field, PositiveInt, StringConstraints
 
 from app.core.models.base import CoreModel
 from app.core.models.types import EmailAddress, NonEmptyStr
@@ -37,10 +37,16 @@ class EmailProviderConfig(CoreModel):
     timeout_seconds: Annotated[int, Field(ge=1, le=120)] = 30
 
 
+# A provider model id (e.g. "gpt-4.1-mini", "claude-sonnet-4-5", "gemini-2.5-flash",
+# "ft:gpt-4o-mini:org:name:id"): never a path or URL; the configured model is always used.
+ModelName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$")]
+
+
 class LLMProviderConfig(CoreModel):
     provider: LLMProviderId = LLMProviderId.NONE
-    model: NonEmptyStr | None = None
+    model: ModelName | None = None
     timeout_seconds: Annotated[int, Field(ge=1, le=300)] = 30
+    max_output_tokens: Annotated[int, Field(ge=256, le=32_768)] = 4096
 
 
 class TelegramOperator(CoreModel):

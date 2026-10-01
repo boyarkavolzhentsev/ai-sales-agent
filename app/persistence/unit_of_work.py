@@ -52,6 +52,7 @@ from app.persistence.repositories.sqlite import (
     SqliteLeadQualificationRepository,
     SqliteLeadRepository,
     SqliteMailboxSyncRepository,
+    SqliteEnrichmentJobRepository,
     SqliteOperatorChannelRepository,
     SqliteOperatorCommandRepository,
     SqliteOperatorResponseRepository,
@@ -109,6 +110,7 @@ class UnitOfWork:
         self.mailbox_sync: MailboxSyncRepository = SqliteMailboxSyncRepository(tx)
         # Operator channel synchronization (Stage 17).
         self.operator_channel = SqliteOperatorChannelRepository(tx)
+        self.enrichment_jobs = SqliteEnrichmentJobRepository(tx)
 
     def savepoint(self) -> AbstractContextManager[None]:
         """All-or-nothing sub-unit: writes inside it are undone if it raises, while the

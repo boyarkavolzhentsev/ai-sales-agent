@@ -26,6 +26,10 @@ class LLMTask(StrEnum):
     KNOWLEDGE_SUFFICIENCY = "KNOWLEDGE_SUFFICIENCY"
     REPLY_COMPOSITION = "REPLY_COMPOSITION"
     THREAD_SUMMARY = "THREAD_SUMMARY"
+    # Stage 18: the Stage 12/13 AI contracts (prompts live with their adapters in app.ai).
+    QUALIFICATION_EXTRACTION = "QUALIFICATION_EXTRACTION"
+    COMMERCIAL_EXTRACTION = "COMMERCIAL_EXTRACTION"
+    SALES_ADVICE = "SALES_ADVICE"
 
 
 class SectionKind(StrEnum):
@@ -64,6 +68,10 @@ class LLMRawOutput(CoreModel):
     model_name: NonEmptyStr
     provider_name: NonEmptyStr
     attempt: PositiveInt = 1
+    # Safe diagnostics only (never content): the provider's request id and token usage.
+    request_id: Annotated[str, Field(max_length=200)] | None = None
+    input_tokens: Annotated[int, Field(ge=0)] | None = None
+    output_tokens: Annotated[int, Field(ge=0)] | None = None
 
 
 class LLMResultMetadata(CoreModel):

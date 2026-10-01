@@ -44,6 +44,9 @@ def telegram(**overrides: str | None) -> dict[str, str | None]:
     return {"OPERATOR_PROVIDER": "telegram", "TELEGRAM_BOT_TOKEN": BOT_TOKEN, "TELEGRAM_OPERATOR_CHAT_IDS": "1001=op-alice,2002=op-bob"} | overrides
 
 
+NO_LLM: dict[str, str | None] = {"LLM_PROVIDER": None, "LLM_MODEL": None, "LLM_API_KEY": None}
+
+
 def full_env(tmp_path: Path, **overrides: str | None) -> dict[str, str]:
     """Every provider selected with fake secrets, plus the core runtime variables."""
     return env(tmp_path / "agent.sqlite3", **(gmail(tmp_path) | llm() | telegram() | overrides))

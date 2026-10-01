@@ -65,12 +65,12 @@ def test_the_cli_never_prints_the_token(tmp_path: Path, monkeypatch: pytest.Monk
     clean(text)
 
 
-def test_production_is_still_not_ready(tmp_path: Path) -> None:
-    from tests.integrations.builders import full_env
-    app = SalesAgentRuntime(load_config(full_env(tmp_path, MODE="production"), now=NOW), connectors=fake_connectors())
+def test_production_is_not_ready_without_an_llm(tmp_path: Path) -> None:
+    from tests.integrations.builders import NO_LLM, full_env
+    app = SalesAgentRuntime(load_config(full_env(tmp_path, MODE="production", **NO_LLM), now=NOW), connectors=fake_connectors())
     with pytest.raises(StartupError) as error:
         app.start()
-    assert str(error.value) == "PRODUCTION_NOT_READY: LLM:NOT_IMPLEMENTED"
+    assert str(error.value) == "PRODUCTION_NOT_READY: LLM:DISABLED"
 
 
 def test_customer_text_in_cards_is_plain_cleaned_and_bounded(tmp_path: Path) -> None:

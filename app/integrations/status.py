@@ -51,6 +51,7 @@ VARIABLES: dict[tuple[str, str], str] = {
     ("email", "credentials_file"): "GMAIL_CREDENTIALS_FILE", ("email", "token_file"): "GMAIL_TOKEN_FILE",
     ("email", "poll_interval_seconds"): "GMAIL_POLL_INTERVAL_SECONDS", ("email", "timeout_seconds"): "GMAIL_TIMEOUT_SECONDS",
     ("llm", "provider"): "LLM_PROVIDER", ("llm", "model"): "LLM_MODEL", ("llm", "timeout_seconds"): "LLM_TIMEOUT_SECONDS",
+    ("llm", "max_output_tokens"): "LLM_MAX_OUTPUT_TOKENS",
     ("operator", "provider"): "OPERATOR_PROVIDER", ("operator", "operators"): "TELEGRAM_OPERATOR_CHAT_IDS",
     ("operator", "timeout_seconds"): "TELEGRAM_TIMEOUT_SECONDS",
     ("knowledge", "provider"): "KNOWLEDGE_PROVIDER", ("knowledge", "directory"): "KNOWLEDGE_DIR",

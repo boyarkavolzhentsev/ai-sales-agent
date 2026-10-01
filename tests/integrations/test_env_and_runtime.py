@@ -56,30 +56,42 @@ def test_an_unknown_provider_reports_only_itself(tmp_path: Path) -> None:
 
 
 def test_production_is_a_mode_and_it_fails_closed(tmp_path: Path) -> None:
-    config = load_config(full_env(tmp_path, MODE="production"), now=NOW)
+    from tests.integrations.builders import NO_LLM
+    config = load_config(full_env(tmp_path, MODE="production", **NO_LLM), now=NOW)
     assert config.mode is RuntimeMode.PRODUCTION
     app = SalesAgentRuntime(config)
     with pytest.raises(StartupError) as error:
         app.start()
     assert error.value.code == "PRODUCTION_NOT_READY" and app.state is RuntimeState.FAILED
-    # Gmail (Stage 16) and Telegram (Stage 17) are implemented; the LLM is not, so
-    # production still fails closed.
-    assert str(error.value) == "PRODUCTION_NOT_READY: LLM:NOT_IMPLEMENTED"
+    # Every required category must be CONFIGURED: without an LLM production fails closed.
+    assert str(error.value) == "PRODUCTION_NOT_READY: LLM:DISABLED"
     assert not (tmp_path / "agent.sqlite3").exists()  # refused before touching the database
+
+
+def test_production_starts_only_when_every_required_provider_is_configured(tmp_path: Path) -> None:
+    # Stage 18: Gmail, Telegram, an LLM and LOCAL knowledge are all implemented; with every
+    # one configured (and Gmail/Telegram verified at startup) production starts.
+    from tests.telegram.builders import fake_connectors
+    app = SalesAgentRuntime(load_config(full_env(tmp_path, MODE="production"), now=NOW), connectors=fake_connectors())
+    report = app.start()
+    assert report.integrations.production_ready and report.integrations.production_blockers == ()
+    assert app.state is RuntimeState.READY
+    app.stop()
 
 
 # ---- Runtime -----------------------------------------------------------------------------------------
 
 
-def test_selected_but_unimplemented_providers_never_become_capabilities(tmp_path: Path) -> None:
+def test_selected_providers_become_capabilities(tmp_path: Path) -> None:
     from tests.telegram.builders import fake_connectors
     app = SalesAgentRuntime(load_config(full_env(tmp_path), now=NOW), connectors=fake_connectors())
     report = app.start()
-    # Gmail (Stage 16) and Telegram (Stage 17) are capabilities; the LLM stays unavailable.
-    assert (report.capabilities.dispatch, report.capabilities.reconciliation, report.capabilities.inbound) == (True, True, False)
-    assert report.capabilities.operator_channel
+    # Gmail (Stage 16), Telegram (Stage 17) and the LLM (Stage 18) are capabilities.
+    assert (report.capabilities.dispatch, report.capabilities.reconciliation, report.capabilities.inbound) == (True, True, True)
+    assert report.capabilities.operator_channel and report.capabilities.qualification_extraction
+    assert report.capabilities.commercial_extraction and report.capabilities.sales_advice
     states = {p.category: p.state for p in report.integrations.providers}
-    assert states == {P.EMAIL: S.CONFIGURED, P.LLM: S.NOT_IMPLEMENTED, P.OPERATOR_CHANNEL: S.CONFIGURED,
+    assert states == {P.EMAIL: S.CONFIGURED, P.LLM: S.CONFIGURED, P.OPERATOR_CHANNEL: S.CONFIGURED,
                       P.KNOWLEDGE: S.CONFIGURED, P.EMBEDDINGS: S.DISABLED}
     assert app.health().integrations == report.integrations and app.health().ready
     assert app.campaign_tick().status.value == "OK"  # the offline runtime works exactly as before
@@ -130,13 +142,14 @@ def run(*argv: str, environ: dict[str, str]) -> tuple[int, dict[str, object], st
 def test_provider_status_reports_without_a_database(tmp_path: Path) -> None:
     code, report, _ = run("provider-status", environ=full_env(tmp_path))
     assert code == OK and report["configuration_valid"] is True and report["mode"] == "LOCAL"
-    assert report["production_ready"] is False and not (tmp_path / "agent.sqlite3").exists()
+    # Every required category is configured (Stage 18); provider-status itself contacts nothing.
+    assert report["production_ready"] is True and not (tmp_path / "agent.sqlite3").exists()
     integrations = report["integrations"]
     assert isinstance(integrations, dict)
     rows = {row["category"]: row for row in integrations["providers"]}  # type: ignore[index]
     assert (rows["EMAIL"]["provider"], rows["EMAIL"]["state"], rows["EMAIL"]["authorization"]) == (
         "GMAIL", "CONFIGURED", "AUTHORIZED")  # locally: the refresh secret; nothing was contacted
-    assert (rows["LLM"]["state"], rows["LLM"]["capability_available"]) == ("NOT_IMPLEMENTED", False)
+    assert (rows["LLM"]["state"], rows["LLM"]["capability_available"]) == ("CONFIGURED", True)
 
 
 def test_provider_status_names_invalid_configuration(tmp_path: Path) -> None:
@@ -148,7 +161,8 @@ def test_provider_status_names_invalid_configuration(tmp_path: Path) -> None:
 
 
 def test_runtime_commands_refuse_production_before_anything_else(tmp_path: Path) -> None:
-    environ = full_env(tmp_path, MODE="production")
+    from tests.integrations.builders import NO_LLM
+    environ = full_env(tmp_path, MODE="production", **NO_LLM)
     code, report, _ = run("init", environ=environ)
     assert (code, report["error"], report["code"]) == (3, "STARTUP_FAILED", "PRODUCTION_NOT_READY")
     assert not (tmp_path / "agent.sqlite3").exists()

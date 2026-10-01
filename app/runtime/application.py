@@ -37,6 +37,7 @@ from app.integrations import IntegrationStatus, ProviderConnectors, ProviderStat
 from app.integrations.mailbox import MailboxSyncResult, SyncStatus
 from app.integrations.channel import OperatorSyncResult, OperatorSyncStatus
 from app.runtime.config import RuntimeMode
+from app.enrichment import AIRecoveryResult
 from app.runtime.container import Adapters, Capabilities, Services, build_services, configured_adapters, offline_adapters
 from app.runtime.errors import CapabilityUnavailableError, RuntimeBusyError, RuntimeNotReadyError, StartupError
 from app.runtime.recovery import inspect_recovery
@@ -311,6 +312,15 @@ class SalesAgentRuntime:
                 return OperatorSyncResult(status=OperatorSyncStatus.SKIPPED, reason="OPERATOR_CHANNEL_NOT_CONFIGURED")
             return services.operator_channel.sync_once(limit=limit or self._config.worker.batch_limit)
 
+    def ai_recovery_tick(self, *, limit: int | None = None) -> AIRecoveryResult:
+        """One bounded pass over due AI enrichment jobs (Stage 12/13 extraction that failed
+        transiently, or was interrupted). Runs from the stored Stage 6 result: no mailbox
+        redelivery. Never drafts or sends anything; never waits or loops."""
+        with self._work() as services:
+            if services.enrichment is None:
+                return AIRecoveryResult(status="SKIPPED", reason="LLM_NOT_CONFIGURED")
+            return services.enrichment.recover(limit=limit or self._config.worker.batch_limit)
+
     def _with_operator_channel(self, services: Services) -> Services:
         channel = self._adapters.operator_channel
         if channel is None:
@@ -334,13 +344,17 @@ class SalesAgentRuntime:
             lines += [f"{p.category.value}: {p.provider} {p.state.value}" for p in self._integrations.providers]
         capabilities = self._capability_report()
         lines.append("Capabilities: " + ", ".join(name for name, on in capabilities.model_dump().items() if on))
+        if self._services is not None and self._services.enrichment is not None:
+            counts = self._services.enrichment.counts()
+            lines.append(f"AI enrichment: {counts.get('RETRY_WAIT', 0)} waiting to retry, "
+                         f"{counts.get('FAILED_FINAL', 0)} failed (need an operator)")
         return "\n".join(lines)
 
     def _build_provider_adapters(self) -> None:
         """Selected providers' adapters (Gmail: token load/refresh, account check). A
         provider that cannot be used fails startup with a stable code; no OAuth flow starts."""
         try:
-            self._adapters = configured_adapters(self._config, self._injected, self._connectors)
+            self._adapters = configured_adapters(self._config, self._injected, self._connectors, self._clock)
         except ProviderUnavailableError as exc:
             raise StartupError(f"{exc.category.value}_PROVIDER_UNAVAILABLE", exc.code) from None
         self._capabilities = Capabilities.of(self._adapters)
@@ -365,15 +379,19 @@ class SalesAgentRuntime:
     def _capability_report(self) -> CapabilityReport:
         return CapabilityReport(dispatch=self._capabilities.dispatch, reconciliation=self._capabilities.reconciliation,
                                 inbound=self._capabilities.inbound, email_sync=self._capabilities.email_sync,
-                                operator_channel=self._capabilities.operator_channel)
+                                operator_channel=self._capabilities.operator_channel,
+                                qualification_extraction=self._capabilities.qualification_extraction,
+                                commercial_extraction=self._capabilities.commercial_extraction,
+                                sales_advice=self._capabilities.sales_advice)
 
 
 def _process_inbound(services: Services, envelope: InboundEnvelope, correlation_id: str) -> InboundResult:
-    """Stage 6, then the Stage 12 and Stage 13 hooks, each its own step (all idempotent)."""
-    assert services.inbound is not None
+    """Stage 6, then the Stage 12 and Stage 13 hooks, each its own step (all idempotent).
+    With extractors configured the hooks run as durable AI enrichment jobs: one inline
+    attempt now, and ``ai_recovery_tick`` retries a transient failure later."""
+    assert services.inbound is not None and services.enrichment is not None
     result = services.inbound.process(envelope, correlation_id=correlation_id)
-    services.pipeline.record_inbound(result, correlation_id=correlation_id)
-    services.commercial.record_inbound(result, correlation_id=correlation_id)
+    services.enrichment.after_inbound(result, correlation_id=correlation_id)
     return result
 
 

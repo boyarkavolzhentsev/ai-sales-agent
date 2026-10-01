@@ -14,6 +14,9 @@ from app.persistence.errors import (
     SchemaVersionError,
 )
 from app.persistence.records import (
+    AIEnrichmentJob,
+    EnrichmentJobStatus,
+    EnrichmentKind,
     UNRESOLVED_ATTEMPT_STATES,
     DispatchAttempt,
     DispatchAttemptState,
@@ -57,6 +60,9 @@ __all__ = [
     "MailboxSyncStatus",
     "ConfirmationStatus",
     "NotificationStatus",
+    "AIEnrichmentJob",
+    "EnrichmentJobStatus",
+    "EnrichmentKind",
     "OperatorChannelFailure",
     "OperatorChannelState",
     "OperatorConfirmation",

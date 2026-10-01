@@ -42,10 +42,10 @@ def matches(name: str, prefixes: tuple[str, ...]) -> bool:
 def test_a_fresh_database_reaches_v11_with_minimal_tables(tmp_path: Path) -> None:
     path = tmp_path / "fresh.sqlite3"
     with Database(path) as db:
-        assert db.initialize_schema(FrozenClock(NOW)) == latest_version() == 11
+        assert db.initialize_schema(FrozenClock(NOW)) == latest_version() >= 11
     raw = sqlite3.connect(path)
     try:
-        assert current_version(raw) == 11 and MIGRATIONS[-1].name == "operator_channel_sync"
+        assert current_version(raw) == latest_version() and MIGRATIONS[10].name == "operator_channel_sync"
         columns = {table: [row[1] for row in raw.execute(f"PRAGMA table_info({table})")] for table in TABLES}
     finally:
         raw.close()
@@ -74,8 +74,8 @@ def test_v1_to_v10_are_unchanged_and_a_v10_database_upgrades_intact(tmp_path: Pa
         lead_id = opportunity_lead(db)
         before = (lead(db, lead_id), active_opportunity(db, lead_id))
     with Database(path) as db:
-        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=1))) == 11
-        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=2))) == 11  # idempotent
+        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=1))) == latest_version()
+        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=2))) == latest_version()  # idempotent
         assert (lead(db, lead_id), active_opportunity(db, lead_id)) == before
         with db.transaction() as uow:
             assert uow.operator_channel.get_state("telegram", "424242") is None  # nothing backfilled

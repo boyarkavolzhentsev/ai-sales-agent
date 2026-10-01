@@ -59,10 +59,13 @@ def classify_with(body: str) -> list[PromptSection]:
 
 
 def test_prompt_registry_has_stable_unique_identities() -> None:
-    identities = [(p.prompt_id, p.version) for p in PROMPTS]
-    assert len(set(identities)) == len(PROMPTS) == 4
-    assert {p.task for p in PROMPTS} == set(LLMTask)
-    assert all(UNTRUSTED_DATA_NOTICE in p.instructions for p in PROMPTS)
+    # Stage 18 adds the Stage 12/13 contract prompts, kept with their adapters in app.ai.
+    from app.ai.prompts import AI_PROMPTS
+    every = (*PROMPTS, *AI_PROMPTS)
+    identities = [(p.prompt_id, p.version) for p in every]
+    assert len(set(identities)) == len(every) == 7 and len(PROMPTS) == 4
+    assert {p.task for p in every} == set(LLMTask) and len({p.task for p in every}) == len(every)
+    assert all(UNTRUSTED_DATA_NOTICE in p.instructions for p in every)
 
 
 @pytest.mark.parametrize("injection", INJECTIONS)

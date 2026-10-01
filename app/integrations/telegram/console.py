@@ -534,6 +534,10 @@ class TelegramConsole:
             kind = "first touch" if draft.kind is OutboundKind.FIRST_TOUCH else draft.kind.value.lower().replace("_", " ")
             lines += ["", f"Draft {kind} - subject: {excerpt(draft.generated_draft.subject, 150)}",
                       excerpt(draft.generated_draft.body, 1500)]
+            if action is A.REVIEW_REPLY_DRAFT and not draft.evidence:
+                # Generated text that cites no approved knowledge: only the reviewer can catch an
+                # unsupported capability claim the deterministic checks cannot recognize.
+                lines.append("Note: this draft cites no approved knowledge. Check every factual statement.")
             if draft.blockers:
                 lines.append("Approval blocked now: " + ", ".join(b.value for b in draft.blockers))
             rows.append((("Approve", encode(Action.APPROVE_DRAFT, draft.outbound_id, draft.version)),

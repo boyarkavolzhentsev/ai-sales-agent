@@ -85,15 +85,18 @@ def test_credential_files_inside_the_code_tree_must_be_under_local(tmp_path: Pat
 
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic", "gemini"])
-def test_every_llm_provider_is_configured_but_not_implemented(provider: str) -> None:
+def test_every_llm_provider_is_implemented_and_configured(provider: str) -> None:
+    # Stage 18 implements all three: a valid selection is CONFIGURED (no request is made).
     ok = status_of(llm(provider)).of(P.LLM)
-    assert (ok.provider, ok.state, ok.capability_available) == (provider.upper(), S.NOT_IMPLEMENTED, False)
+    assert (ok.provider, ok.state, ok.implemented, ok.capability_available) == (provider.upper(), S.CONFIGURED, True, True)
     no_key = status_of(llm(provider, LLM_API_KEY=None)).of(P.LLM)
     assert no_key.state is S.INVALID and no_key.problems == ("SALES_AGENT_LLM_API_KEY: MISSING_SECRET",)
     no_model = status_of(llm(provider, LLM_MODEL=None)).of(P.LLM)
     assert no_model.problems == ("SALES_AGENT_LLM_MODEL: MISSING_SETTING",)
     parsed = parse_integrations({k: v for k, v in llm(provider).items() if v})
-    assert build_provider_adapters(parsed.config, parsed.secrets).llm_transport is None  # no live client
+    transport = build_provider_adapters(parsed.config, parsed.secrets).llm_transport
+    assert transport is not None and transport.provider_name == provider  # built without any request
+    assert API_KEY not in repr(transport)
 
 
 def test_telegram_is_validated_structurally() -> None:

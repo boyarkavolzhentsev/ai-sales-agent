@@ -24,13 +24,25 @@ BOT_TOKEN = "654321:test-secret-do-not-use-telegram-bot"  # deliberately not a r
 OPERATORS = f"{ALICE_CHAT}=op-alice,{BOB_CHAT}=op-bob"
 
 
-def fake_connectors(telegram: FakeTelegramApi | None = None, gmail: FakeGmailApi | None = None) -> ProviderConnectors:
+def fake_connectors(telegram: FakeTelegramApi | None = None, gmail: FakeGmailApi | None = None,
+                    llm_session: object = None) -> ProviderConnectors:
+    """Fakes beneath every provider adapter; ``llm_session`` is the HTTP session a selected
+    LLM adapter posts through (Stage 18), a fresh refusing one by default."""
     telegram, gmail = telegram or FakeTelegramApi(), gmail or FakeGmailApi()
-    return ProviderConnectors(gmail_api=lambda auth, timeout: gmail, telegram_api=lambda token, timeout: telegram)
+    if llm_session is None:
+        from tests.llm_providers.fakes import FakeSession
+        llm_session = FakeSession()
+    return ProviderConnectors(gmail_api=lambda auth, timeout: gmail, telegram_api=lambda token, timeout: telegram,
+                              llm_session=lambda: llm_session)
 
 
 def telegram_values(**overrides: str | None) -> dict[str, str | None]:
     return {"OPERATOR_PROVIDER": "telegram", "TELEGRAM_BOT_TOKEN": BOT_TOKEN, "TELEGRAM_OPERATOR_CHAT_IDS": OPERATORS} | overrides
+
+
+def knowledge_seeded(db: Database) -> bool:
+    with db.transaction() as uow:
+        return bool(uow._tx.fetch_all("SELECT 1 FROM knowledge_chunks LIMIT 1"))  # noqa: SLF001
 
 
 @dataclass
@@ -55,9 +67,9 @@ class Console:
 
 
 def console(tmp_path: Path, *, gmail: bool = False, at: datetime = NOW, telegram: FakeTelegramApi | None = None,
-            **overrides: str | None) -> Console:
+            llm_session: object = None, gmail_api: FakeGmailApi | None = None, **overrides: str | None) -> Console:
     telegram = telegram or FakeTelegramApi()
-    gmail_api = FakeGmailApi()
+    gmail_api = gmail_api or FakeGmailApi()  # pass the previous one to restart over the same mailbox
     clock = FrozenClock(at)
     values = telegram_values(**overrides)
     if gmail:
@@ -70,8 +82,9 @@ def console(tmp_path: Path, *, gmail: bool = False, at: datetime = NOW, telegram
     adapters = Adapters(llm_transport=llm, authenticator=FakeAuthenticator(), qualification_extractor=qualification,
                         commercial_extractor=commercial, email_transport=transport,
                         reconciler=FakeReconciler(transport) if transport else None)
-    app = SalesAgentRuntime(config, adapters=adapters, clock=clock, connectors=fake_connectors(telegram, gmail_api))
+    app = SalesAgentRuntime(config, adapters=adapters, clock=clock, connectors=fake_connectors(telegram, gmail_api, llm_session))
     app.start()
-    seed_knowledge(app_db(app))
+    if not knowledge_seeded(app_db(app)):
+        seed_knowledge(app_db(app))
     world = World(app=app, clock=clock, transport=transport, llm=llm, qualification=qualification, commercial=commercial)  # type: ignore[arg-type]
     return Console(world=world, telegram=telegram, gmail=gmail_api)

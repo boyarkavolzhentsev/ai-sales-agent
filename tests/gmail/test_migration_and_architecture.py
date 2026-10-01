@@ -84,10 +84,11 @@ def test_only_composition_ever_selects_gmail() -> None:
 
 
 def test_google_code_lives_only_in_the_gmail_package() -> None:
-    telegram = APP / "integrations" / "telegram"  # Stage 17: its Bot API client uses requests (no Google code)
+    # Stages 17/18: the Telegram and LLM HTTPS clients use requests (no Google code).
+    https = (APP / "integrations" / "telegram", APP / "integrations" / "llm")
     offenders = [f"{p.relative_to(APP)}: {n}" for p in APP.rglob("*.py") if not p.is_relative_to(GMAIL)
                  for n in imports(p) if matches(n, ("google", "google_auth_oauthlib", "oauthlib", "httplib2", "googleapiclient"))
-                 or (matches(n, ("requests",)) and not p.is_relative_to(telegram))]
+                 or (matches(n, ("requests",)) and not any(p.is_relative_to(d) for d in https))]
     assert offenders == []
 
 

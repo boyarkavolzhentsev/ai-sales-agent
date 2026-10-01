@@ -28,6 +28,7 @@ from app.llm.composer import (
 from app.llm.errors import (
     LLMContractViolationError,
     LLMError,
+    LLMErrorCode,
     LLMNoScriptedResponseError,
     LLMProviderError,
     LLMStructuredOutputError,
@@ -64,6 +65,7 @@ __all__ = [
     "KnowledgeSufficiencyOpinion",
     "LLMContractViolationError",
     "LLMError",
+    "LLMErrorCode",
     "LLMNoScriptedResponseError",
     "LLMProviderError",
     "LLMRawOutput",

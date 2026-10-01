@@ -105,6 +105,9 @@ class CapabilityReport(CoreModel):
     inbound: bool
     email_sync: bool = False
     operator_channel: bool = False
+    qualification_extraction: bool = False
+    commercial_extraction: bool = False
+    sales_advice: bool = False
 
 
 class StartupReport(CoreModel):

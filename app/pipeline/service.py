@@ -54,6 +54,7 @@ class HookStatus(StrEnum):
 class InboundPipelineOutcome(CoreModel):
     status: HookStatus
     reason: str | None = None
+    error_code: str | None = None  # EXTRACTION_FAILED: the extractor's stable code, if it gave one
     lead_id: EntityId | None = None
     facts_added: tuple[str, ...] = ()
     facts_corroborated: tuple[str, ...] = ()
@@ -103,6 +104,10 @@ class PipelineService:
                 lead = observed
             message = uow.messages.get(result.message_id)
             qualification = uow.qualifications.get(lead.lead_id)
+            # Already extracted for this message (a redelivery): never ask the extractor again.
+            done = uow.idempotency.exists(f"pipeline:extraction:{result.message_id}")
+        if done:
+            return InboundPipelineOutcome(status=HookStatus.REPLAYED, lead_id=lead.lead_id)
         if self._extractor is None or message is None:
             return InboundPipelineOutcome(status=HookStatus.SKIPPED, reason="NO_EXTRACTOR", lead_id=lead.lead_id)
         request = ExtractionRequest(
@@ -114,7 +119,8 @@ class PipelineService:
         try:
             extraction = self._extractor.extract(request)
         except Exception as exc:  # noqa: BLE001 - optional enrichment: never fails inbound processing
-            return InboundPipelineOutcome(status=HookStatus.EXTRACTION_FAILED, reason=type(exc).__name__, lead_id=lead.lead_id)
+            return InboundPipelineOutcome(status=HookStatus.EXTRACTION_FAILED, reason=type(exc).__name__,
+                                          error_code=_error_code(exc), lead_id=lead.lead_id)
         now = self._clock.now()
         with self._db.transaction() as uow:
             lead_now = uow.leads.get(lead.lead_id)
@@ -202,3 +208,10 @@ class PipelineService:
 
 def qualification_status(uow: UnitOfWork, lead_id: str) -> QualificationStatus:
     return status_of(uow.qualifications.get(lead_id))
+
+
+def _error_code(exc: BaseException) -> str | None:
+    """A stable failure code the extractor attached (e.g. an LLM provider code), if any."""
+    code = getattr(exc, "code", None)
+    value = getattr(code, "value", code)
+    return value if isinstance(value, str) and value else None

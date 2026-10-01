@@ -2,16 +2,17 @@
 
 ``build_provider_adapters`` is the one place a selected provider becomes an adapter
 implementing an existing contract (``EmailTransport``/``DispatchReconciler``, the
-provider-neutral ``MailboxReader``; later ``LLMTransport`` and ``OperatorAuthenticator``).
+provider-neutral ``MailboxReader``, ``LLMTransport`` and the Telegram operator channel).
 It never substitutes a fake: a configured provider is not an implemented one, and a
 provider that cannot be used now (e.g. not authorized) raises ``ProviderUnavailableError``.
 
-Implemented: LOCAL knowledge (the Stage 4 index), GMAIL email (Stage 16) and TELEGRAM
-operator channel (Stage 17). Provider code is imported only when that provider is
-selected, so an offline deployment never loads it. Building Gmail adapters reads the local
-token, refreshes it if needed and makes one read (the account profile) to confirm the
-mailbox; it never starts the interactive OAuth flow. Building Telegram adapters makes one
-``getMe`` call to prove the bot token works.
+Implemented: LOCAL knowledge (the Stage 4 index), GMAIL email (Stage 16), TELEGRAM
+operator channel (Stage 17) and the OPENAI, ANTHROPIC and GEMINI LLMs (Stage 18). Provider
+code is imported only when that provider is selected, so an offline deployment never
+loads it. Building Gmail adapters reads the local token, refreshes it if needed and makes
+one read (the account profile) to confirm the mailbox; it never starts the interactive
+OAuth flow. Building Telegram adapters makes one ``getMe`` call to prove the bot token
+works. Building an LLM adapter makes no request at all (no billable call at startup).
 """
 
 from dataclasses import dataclass
@@ -20,7 +21,13 @@ from typing import Any
 from app.dispatch import DispatchReconciler, EmailTransport
 from app.integrations.config import IntegrationConfig
 from app.integrations.mailbox import MailboxReader
-from app.integrations.providers import EmailProviderId, KnowledgeProviderId, OperatorProviderId, ProviderCategory
+from app.integrations.providers import (
+    EmailProviderId,
+    KnowledgeProviderId,
+    LLMProviderId,
+    OperatorProviderId,
+    ProviderCategory,
+)
 from app.integrations.secrets import ProviderSecrets
 from app.llm import LLMTransport
 from app.operator import OperatorAuthenticator
@@ -30,6 +37,9 @@ IMPLEMENTED: frozenset[tuple[ProviderCategory, str]] = frozenset({
     (ProviderCategory.KNOWLEDGE, KnowledgeProviderId.LOCAL.value),
     (ProviderCategory.EMAIL, EmailProviderId.GMAIL.value),
     (ProviderCategory.OPERATOR_CHANNEL, OperatorProviderId.TELEGRAM.value),
+    (ProviderCategory.LLM, LLMProviderId.OPENAI.value),
+    (ProviderCategory.LLM, LLMProviderId.ANTHROPIC.value),
+    (ProviderCategory.LLM, LLMProviderId.GEMINI.value),
 })
 
 
@@ -49,11 +59,13 @@ class ProviderUnavailableError(Exception):
 @dataclass(frozen=True)
 class ProviderConnectors:
     """Seam beneath the adapters (tests): ``gmail_api(GmailAuth, timeout_seconds)`` returns
-    a ``GmailApi``; ``telegram_api(token, timeout_seconds)`` a ``TelegramApi``. None means
-    the real client."""
+    a ``GmailApi``; ``telegram_api(token, timeout_seconds)`` a ``TelegramApi``;
+    ``llm_session()`` the HTTP session the LLM adapter posts through. None means the real
+    client."""
 
     gmail_api: Any = None
     telegram_api: Any = None
+    llm_session: Any = None
 
 
 @dataclass(frozen=True)
@@ -106,4 +118,12 @@ def build_provider_adapters(config: IntegrationConfig, secrets: ProviderSecrets,
                                      **({"api_factory": connectors.telegram_api} if connectors.telegram_api else {}))
         except TelegramError as exc:
             raise ProviderUnavailableError(ProviderCategory.OPERATOR_CHANNEL, exc.code.value) from None
-    return ProviderAdapters(**email, operator_channel=channel, not_implemented=missing)
+    llm = None
+    if config.llm.provider is not LLMProviderId.NONE:
+        from app.integrations.llm.provider import LLMConfigurationError, build_llm
+
+        try:
+            llm = build_llm(config.llm, secrets.llm, session=connectors.llm_session() if connectors.llm_session else None)
+        except LLMConfigurationError:
+            raise ProviderUnavailableError(ProviderCategory.LLM, "INVALID_PROVIDER_CONFIG") from None
+    return ProviderAdapters(**email, operator_channel=channel, llm_transport=llm, not_implemented=missing)

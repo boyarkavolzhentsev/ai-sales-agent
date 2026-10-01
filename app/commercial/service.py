@@ -46,6 +46,7 @@ class CommercialHookStatus(StrEnum):
 class CommercialHookOutcome(CoreModel):
     status: CommercialHookStatus
     reason: str | None = None
+    error_code: str | None = None  # EXTRACTION_FAILED: the extractor's stable code, if it gave one
     opportunity_id: EntityId | None = None
     request_ids: tuple[EntityId, ...] = ()
     objection_ids: tuple[EntityId, ...] = ()
@@ -88,7 +89,11 @@ class CommercialService:
             current = revisions[-1] if revisions else None
             known = effective_terms(self._config.profile, current, uow.commercial_terms.list_for_opportunity(
                 context.opportunity.opportunity_id), now)
+            # Already extracted for this message (a redelivery): never ask the extractor again.
+            done = uow.idempotency.exists(f"commercial:extraction:{result.message_id}")
         opportunity_id = context.opportunity.opportunity_id
+        if done:
+            return CommercialHookOutcome(status=CommercialHookStatus.REPLAYED, opportunity_id=opportunity_id)
         if self._extractor is None or message is None:
             return CommercialHookOutcome(status=CommercialHookStatus.SKIPPED, reason="NO_EXTRACTOR", opportunity_id=opportunity_id)
         request = CommercialExtractionRequest(
@@ -99,7 +104,7 @@ class CommercialService:
             extraction = self._extractor.extract(request)
         except Exception as exc:  # noqa: BLE001 - optional enrichment: never fails inbound processing
             return CommercialHookOutcome(status=CommercialHookStatus.EXTRACTION_FAILED, reason=type(exc).__name__,
-                                         opportunity_id=opportunity_id)
+                                         error_code=_error_code(exc), opportunity_id=opportunity_id)
         now = self._clock.now()
         with self._db.transaction() as uow:
             fresh = self._context(uow, result.lead_id)
@@ -162,3 +167,10 @@ class CommercialService:
     def metrics(self) -> CommercialMetrics:
         with self._db.transaction() as uow:
             return metrics(uow)
+
+
+def _error_code(exc: BaseException) -> str | None:
+    """A stable failure code the extractor attached (e.g. an LLM provider code), if any."""
+    code = getattr(exc, "code", None)
+    value = getattr(code, "value", code)
+    return value if isinstance(value, str) and value else None

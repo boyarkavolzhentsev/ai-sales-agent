@@ -28,6 +28,7 @@ from app.persistence.repositories.sqlite.knowledge_index import SqliteKnowledgeI
 from app.persistence.repositories.sqlite.knowledge_meta import SqliteKnowledgeSourceMetaRepository
 from app.persistence.repositories.sqlite.leads import SqliteLeadRepository
 from app.persistence.repositories.sqlite.mailbox_sync import SqliteMailboxSyncRepository
+from app.persistence.repositories.sqlite.enrichment import SqliteEnrichmentJobRepository
 from app.persistence.repositories.sqlite.operator_channel import SqliteOperatorChannelRepository
 from app.persistence.repositories.sqlite.messages import SqliteEmailMessageRepository
 from app.persistence.repositories.sqlite.operator import (
@@ -66,6 +67,7 @@ __all__ = [
     "SqliteLeadQualificationRepository",
     "SqliteLeadRepository",
     "SqliteMailboxSyncRepository",
+    "SqliteEnrichmentJobRepository",
     "SqliteOperatorChannelRepository",
     "SqliteOperatorCommandRepository",
     "SqliteOperatorResponseRepository",

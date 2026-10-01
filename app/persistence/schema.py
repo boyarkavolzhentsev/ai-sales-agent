@@ -571,3 +571,25 @@ V11_OPERATOR_CHANNEL_SYNC_SCHEMA: tuple[str, ...] = (
         {_VERSIONED_DATA}
     ) STRICT""",
 )
+
+
+# ---- v12: durable AI enrichment jobs (Stage 18 recovery) ----------------------------------
+# One job per (task, inbound message): the qualification and commercial extraction of a
+# stored customer message, claimed (CAS + lease) before any model call and retried with
+# bounded backoff on transient provider failures. ``due_at`` is when the job may be claimed
+# next (a CLAIMED job: its lease expiry). Ids, codes and times only: never a prompt, a
+# model answer, customer text or a key.
+V12_AI_ENRICHMENT_JOBS_SCHEMA: tuple[str, ...] = (
+    f"""CREATE TABLE ai_enrichment_jobs (
+        job_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('QUALIFICATION_EXTRACTION', 'COMMERCIAL_EXTRACTION')),
+        message_id TEXT NOT NULL REFERENCES email_messages (message_id),
+        lead_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('PENDING', 'CLAIMED', 'RETRY_WAIT', 'COMPLETED', 'FAILED_FINAL')),
+        due_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        {_VERSIONED_DATA},
+        UNIQUE (kind, message_id)
+    ) STRICT""",
+    "CREATE INDEX ai_enrichment_jobs_due_idx ON ai_enrichment_jobs (status, due_at)",
+)

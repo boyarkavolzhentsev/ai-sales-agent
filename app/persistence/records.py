@@ -295,3 +295,47 @@ class OperatorConfirmation(CoreModel):
     expires_at: AwareDatetime
     used_at: AwareDatetime | None = None
     version: Version = 1
+
+
+class EnrichmentKind(StrEnum):
+    QUALIFICATION_EXTRACTION = "QUALIFICATION_EXTRACTION"  # Stage 12 hook
+    COMMERCIAL_EXTRACTION = "COMMERCIAL_EXTRACTION"  # Stage 13 hook
+
+
+class EnrichmentJobStatus(StrEnum):
+    PENDING = "PENDING"  # created, not yet run
+    CLAIMED = "CLAIMED"  # a worker holds the lease and may call the model
+    RETRY_WAIT = "RETRY_WAIT"  # a transient provider failure: claimable again at due_at
+    COMPLETED = "COMPLETED"  # the hook applied, replayed or skipped it: never run again
+    FAILED_FINAL = "FAILED_FINAL"  # a non-transient failure or attempts exhausted: never run again
+
+
+class AIEnrichmentJob(CoreModel):
+    """The durable AI enrichment of one stored inbound message for one Stage 12/13 hook.
+    Only the holder of the current ``claim_token`` may run it or settle it."""
+
+    job_id: EntityId
+    kind: EnrichmentKind
+    message_id: EntityId
+    lead_id: EntityId
+    status: EnrichmentJobStatus = EnrichmentJobStatus.PENDING
+    due_at: AwareDatetime  # when it may be claimed next (CLAIMED: the lease expiry)
+    attempts: NonNegativeInt = 0  # runs started (each one may have made one model call)
+    claim_token: EntityId | None = None
+    claimed_by: NonEmptyStr | None = None
+    last_error_code: NonEmptyStr | None = None  # a stable code, never provider text
+    outcome: NonEmptyStr | None = None  # e.g. APPLIED, REPLAYED, SKIPPED:LEAD_CLOSED
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    finished_at: AwareDatetime | None = None
+    version: Version = 1
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        claimed = self.status is EnrichmentJobStatus.CLAIMED
+        if claimed != (self.claim_token is not None and self.claimed_by is not None):
+            raise ValueError("claim_token and claimed_by are required for, and only allowed on, CLAIMED")
+        final = self.status in (EnrichmentJobStatus.COMPLETED, EnrichmentJobStatus.FAILED_FINAL)
+        if final != (self.finished_at is not None):
+            raise ValueError("finished_at is required for, and only allowed on, a final status")
+        return self
