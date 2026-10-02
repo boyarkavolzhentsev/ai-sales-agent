@@ -1,45 +1,171 @@
 # AI Sales Agent
 
-A sales automation and operator-assistance system for inbound and outbound email workflows, RAG-grounded sales conversations, prospect outreach, follow-ups, lead handling and Telegram operator control.
+[![CI](https://github.com/boyarkavolzhentsev/ai-sales-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/boyarkavolzhentsev/ai-sales-agent/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
+![Status](https://img.shields.io/badge/release-CODE_READY-2ea44f)
+![Tests](https://img.shields.io/badge/tests-2750%20passed-2ea44f)
+![Architecture](https://img.shields.io/badge/architecture-human--in--the--loop-blueviolet)
 
-## Current status
+A production-oriented, human-in-the-loop AI sales agent for inbound and outbound email workflows.
 
-Implemented through Stage 20 (deployment readiness): Gmail, Telegram operator control,
-OpenAI/Anthropic/Gemini LLMs, OpenAI/Gemini embeddings with semantic retrieval over approved
-local knowledge, and one-shot runtime commands (`python -m app.runtime <command>`). Every
-outbound email needs an operator's approval. See [docs/deployment.md](docs/deployment.md) to
-deploy and [docs/integrations.md](docs/integrations.md) for providers.
+It combines **Gmail**, **semantic RAG over approved company knowledge**, **OpenAI / Anthropic / Gemini**, **embeddings**, and **Telegram operator approval** while keeping deterministic business rules outside the model.
 
-## V1 scope
+> **Release status:** `CODE_READY`. The complete fake-provider production pipeline is validated. Real-provider live E2E verification is still pending.
 
-- Inbound sales email handling
-- Outbound prospecting
-- Personalized promotional outreach
-- RAG-grounded replies
-- Lead intent/stage classification
-- Operator escalation when knowledge is insufficient
-- Follow-up workflows
-- Campaign/statistics visibility
-- Telegram operator control
+## What it does
 
-## Core safety/product rule
+- Processes inbound sales email
+- Classifies intent and sales context
+- Retrieves approved company knowledge with semantic RAG
+- Generates grounded sales replies
+- Extracts qualification and commercial signals
+- Manages leads, opportunities, follow-ups and campaigns
+- Escalates unsupported or low-confidence requests
+- Sends actions to Telegram for human approval
+- Dispatches approved email through Gmail
+- Recovers safely from restarts and ambiguous provider outcomes
 
-The agent must not fabricate company, product or commercial facts.
-When the knowledge base does not contain sufficient reliable information,
-the system should escalate to the operator instead of inventing an answer.
+## End-to-end workflow
 
-## Repository layout
+```mermaid
+flowchart LR
+    A[Customer email] --> B[Gmail]
+    B --> C[Inbound pipeline]
+    C --> D[Semantic RAG]
+    D --> E[LLM]
+    E --> F[Deterministic validation]
+    F --> G[Orchestration]
+    G --> H[Telegram review]
+    H --> I{Approved?}
+    I -- No --> J[Reject / edit / escalate]
+    I -- Yes --> K[Dispatch policy]
+    K --> L[Gmail send]
 
+    D -->|Insufficient evidence| J
+    E -->|Unsupported output| J
 ```
-app/              Application code (runtime commands: python -m app.runtime --help)
-tests/            Tests
-knowledge_base/   Approved source knowledge for RAG grounding (see knowledge_base/README.md)
-.env.example      Environment variable placeholders
-requirements.txt  Python dependencies (Python 3.13)
-Dockerfile        Production image (one-shot commands; data on the /data volume)
+
+No LLM call can directly approve, send, mark a lead won/lost, create DNC state, or bypass dispatch policy.
+
+## Supported providers
+
+| Capability | Providers |
+|---|---|
+| Email | Gmail |
+| Operator | Telegram |
+| LLM | OpenAI, Anthropic, Gemini |
+| Embeddings | OpenAI, Gemini |
+| Knowledge | LOCAL approved knowledge |
+| Persistence | SQLite |
+
+LLM and embeddings providers are independent.
+
+## Safety model
+
+The LLM is **not** business authority.
+
+It cannot:
+- approve its own reply;
+- send email directly;
+- mark a lead `WON` or `LOST`;
+- approve commercial terms;
+- create do-not-contact state;
+- bypass quotas, send windows or the kill switch.
+
+If approved knowledge is insufficient, the agent escalates instead of inventing product, pricing, SLA or commercial facts.
+
+## Reliability
+
+Validated scenarios include:
+- approval committed → restart → exactly one Gmail send;
+- Gmail submission `UNKNOWN` → reconciliation without blind resend;
+- transient AI failure → durable retry;
+- interrupted embeddings indexing → lease recovery;
+- overlapping scheduler runs → one logical outbound result.
+
+## Semantic RAG
+
+```bash
+python -m app.runtime knowledge-index
 ```
 
-## Configuration
+The indexer embeds only approved/current knowledge, reuses unchanged vectors, invalidates stale vectors when knowledge/model/provider/dimensions change, and uses durable claims for concurrent indexing.
 
-`.env.example` lists every variable. The application reads the process environment only; never
-commit `.env`, tokens or credential files.
+Production requires semantic retrieval. If the semantic index is incomplete, the system fails closed and escalates.
+
+## Deployment
+
+Production target:
+- Python 3.13
+- Docker
+- SQLite
+- one deployment per company
+- one-shot scheduler commands
+
+```bash
+python -m app.runtime provider-status
+python -m app.runtime gmail-auth
+python -m app.runtime init
+python -m app.runtime knowledge-index
+python -m app.runtime deployment-check
+```
+
+Optional explicit provider checks:
+
+```bash
+python -m app.runtime llm-check
+python -m app.runtime embeddings-check
+```
+
+See [docs/deployment.md](docs/deployment.md) for the full production runbook.
+
+## Test status
+
+```text
+2750 passed
+3 skipped
+```
+
+Verified on Python 3.13.16 and Python 3.14.
+
+## Repository structure
+
+```text
+app/
+├── ai/
+├── campaign/
+├── commercial/
+├── conversation/
+├── dispatch/
+├── embeddings/
+├── inbound/
+├── integrations/
+├── knowledge/
+├── llm/
+├── operator/
+├── orchestration/
+├── persistence/
+├── pipeline/
+└── runtime/
+
+docs/
+├── deployment.md
+└── integrations.md
+```
+
+## Documentation
+
+- [Deployment runbook](docs/deployment.md)
+- [Provider integrations](docs/integrations.md)
+- [Knowledge base format](knowledge_base/README.md)
+
+## Project status
+
+```text
+CODE_READY
+LIVE_E2E_NOT_RUN
+```
+
+V1 feature development is complete at the code level.
+
+The remaining step before `LIVE_VERIFIED` is a controlled smoke test with real test credentials.
