@@ -46,11 +46,13 @@ from app.runtime.results import (
     CapabilityReport,
     DispatchPhaseResult,
     HealthReport,
+    ItemError,
     KnowledgeIndexResult,
     PhaseStatus,
     ReconciliationResult,
     RuntimeState,
     RuntimeTickResult,
+    ServiceTickResult,
     StartupReport,
     WorkResult,
 )
@@ -322,6 +324,33 @@ class SalesAgentRuntime:
             if services.enrichment is None:
                 return AIRecoveryResult(status="SKIPPED", reason="LLM_NOT_CONFIGURED")
             return services.enrichment.recover(limit=limit or self._config.worker.batch_limit)
+
+    def service_tick(self, *, dispatch_approved: bool = False, correlation_id: str | None = None) -> ServiceTickResult:
+        """One bounded operating cycle for a single scheduler entry (Stage 20), composed only
+        of the existing one-shot passes, in this order: ``email_sync`` (new customer mail
+        through Stage 6), ``ai_recovery_tick`` (due Stage 12/13 enrichment jobs),
+        ``operator_sync`` (Telegram commands, e.g. approvals, then new review cards), then
+        ``tick`` (Stage 8 reconciliation, campaign and follow-up drafts, and dispatch of
+        operator-approved messages only when ``dispatch_approved``). Each phase keeps its own bounds, transactions, claims and idempotency;
+        a failing phase is reported and the next one still runs. Runs once: no loop, no
+        sleep. Never runs ``knowledge-index`` (billable; run it explicitly)."""
+        correlation = correlation_id or self._correlation("service-tick")
+        errors: list[ItemError] = []
+        phases: dict[str, object] = {}
+        runs = (("email_sync", lambda: self.email_sync(correlation_id=correlation)),
+                ("ai_recovery", self.ai_recovery_tick),
+                ("operator_sync", self.operator_sync),
+                ("tick", lambda: self.tick(dispatch_approved=dispatch_approved, correlation_id=correlation)))
+        for name, run in runs:
+            if not self._running():
+                break  # stop() was requested: no new phase starts
+            try:
+                result = run()
+            except Exception as exc:  # noqa: BLE001 - isolated and reported, never silent
+                errors.append(ItemError(subject=name, error_type=type(exc).__name__))
+                continue
+            phases[name] = result if name == "tick" else result.model_dump(mode="json")  # type: ignore[attr-defined]
+        return ServiceTickResult(correlation_id=correlation, errors=tuple(errors), **phases)  # type: ignore[arg-type]
 
     def knowledge_index(self) -> KnowledgeIndexResult:
         """One bounded pass (Stage 19), never at startup and never a loop: ingest the

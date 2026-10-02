@@ -28,7 +28,19 @@
                     is not ingested]
   knowledge-index   one incremental knowledge pass: ingest KNOWLEDGE_DIR (if configured),
                     then embed approved chunks missing a current vector and delete stale
-                    vectors (if an embeddings provider is configured). Prints counts only
+                    vectors (if an embeddings provider is configured). Prints counts only.
+                    BILLABLE when chunks need embedding
+  service-tick      one bounded operating cycle: email-sync, ai-recovery-tick, operator-sync,
+                    then tick (the same passes as those commands, in one process)
+                    [--dispatch-approved: the tick also dispatches approved messages]
+  deployment-check  read-only readiness: configuration (production-required providers),
+                    database (exists, writable, schema current), knowledge index (approved
+                    knowledge present; every usable chunk embedded) and safe operational
+                    counts. Contacts no provider, opens the database read-only, changes nothing
+  llm-check         BILLABLE, explicit: one tiny fixed request to the configured LLM; expects
+                    the JSON {"ok": true}. No database, no customer or knowledge data
+  embeddings-check  BILLABLE, explicit: embeds the fixed text "deployment-check" once and
+                    validates the vector. No database; nothing is stored
 
 Every command runs once and exits; there is no loop or daemon. Configuration comes from
 ``SALES_AGENT_*`` environment variables. Output is JSON with IDs, counts and codes only;
@@ -36,13 +48,19 @@ the configuration and any secret are never printed. The CLI uses the offline ada
 without a configured provider, dispatch and reconciliation report SKIPPED rather than
 fabricating provider outcomes. Nothing is ever approved here.
 
-Exit codes: 0 ok, 1 unexpected error, 2 invalid configuration or usage, 3 startup or
-health failure, 4 a phase reported errors.
+Exit codes: 0 ok, 1 unexpected error, 2 invalid configuration or usage (also: a live check
+for a provider that is not configured), 3 startup or health failure (also: deployment-check
+found a blocker), 4 a phase reported errors (also: a live check failed).
+
+Every command also writes one log line to stderr (command, outcome, exit code, duration);
+results go to stdout as JSON.
 """
 
 import argparse
 import json
+import logging
 import sqlite3
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
@@ -60,6 +78,7 @@ from app.runtime.errors import ConfigError, StartupError
 from app.runtime.results import PhaseStatus, RuntimeTickResult
 
 OK, UNEXPECTED, INVALID_CONFIG, UNHEALTHY, PHASE_ERRORS = 0, 1, 2, 3, 4
+LOG = logging.getLogger("app.runtime.cli")
 # Provider connectors for the runtime the CLI builds: None is the real providers. (A seam
 # for tests, which substitute a fake Gmail API; never set in production code.)
 CONNECTORS: ProviderConnectors | None = None
@@ -68,12 +87,26 @@ EXECUTION = ("execution-plan", "execution-queue", "execution-metrics", "executio
 
 
 def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
+    started = time.monotonic()
+    command = argv[0] if argv else "-"
+    code = UNEXPECTED
+    try:
+        code = _main(argv, environ, out)
+        return code
+    finally:
+        # Command name, exit code and duration only: never arguments, values or results.
+        LOG.info("command name=%s exit=%d duration_ms=%d", command if command.replace("-", "").isalpha() else "?", code,
+                 int((time.monotonic() - started) * 1000))
+
+
+def _main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.runtime", description="AI sales agent one-shot runtime commands")
     parser.add_argument("command", choices=("init", "health", "provider-status", "gmail-auth", "email-sync", "operator-sync", "ai-recovery-tick",
-                                            "knowledge-index", *TICKS, *EXECUTION))
+                                            "knowledge-index", "service-tick", "deployment-check", "llm-check",
+                                            "embeddings-check", *TICKS, *EXECUTION))
     parser.add_argument("--recover", action="store_true", help="email-sync only: re-establish an expired cursor")
     parser.add_argument("--dispatch-approved", action="store_true",
-                        help="tick / execution-pass only: also dispatch approved messages")
+                        help="tick / service-tick / execution-pass only: also dispatch approved messages")
     parser.add_argument("--lead-id", help="execution-plan: the lead to plan")
     parser.add_argument("--queue", choices=[q.value for q in ExecutionQueue], default=ExecutionQueue.OPERATOR.value,
                         help="execution-queue: which queue")
@@ -84,6 +117,12 @@ def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
     clock = SystemClock()
     if args.command == "provider-status":
         return _provider_status(environ, clock, out)
+    if args.command == "deployment-check":
+        from app.runtime.deployment import check_deployment
+
+        report = check_deployment(environ, now=clock.now())
+        _emit(out, report.model_dump(mode="json"))
+        return OK if report.ready else (INVALID_CONFIG if not report.config_ready and report.mode is None else UNHEALTHY)
     try:
         config = load_config(environ, now=clock.now())
     except ConfigError as exc:
@@ -93,6 +132,13 @@ def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
         return _health(config.database_path, out)
     if args.command == "gmail-auth":
         return _gmail_auth(config, out)
+    if args.command in ("llm-check", "embeddings-check"):
+        from app.runtime import live_checks
+
+        check = live_checks.llm_check if args.command == "llm-check" else live_checks.embeddings_check
+        result = check(config, CONNECTORS)
+        _emit(out, result.model_dump(mode="json"))
+        return {"OK": OK, "NOT_CONFIGURED": INVALID_CONFIG}.get(result.status, PHASE_ERRORS)
     if args.command == "execution-plan" and not args.lead_id:
         _emit(out, {"error": "LEAD_ID_REQUIRED"})
         return INVALID_CONFIG
@@ -117,6 +163,10 @@ def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
             recovered = runtime.ai_recovery_tick()
             _emit(out, recovered.model_dump(mode="json"))
             return OK
+        if args.command == "service-tick":
+            cycle = runtime.service_tick(dispatch_approved=args.dispatch_approved)
+            _emit(out, cycle.model_dump(mode="json"))
+            return OK if cycle.ok else PHASE_ERRORS
         if args.command == "knowledge-index":
             indexed = runtime.knowledge_index()
             _emit(out, indexed.model_dump(mode="json"))

@@ -126,6 +126,25 @@ class KnowledgeIndexResult(CoreModel):
     embeddings: IndexReport | None = None
 
 
+class ServiceTickResult(CoreModel):
+    """One ``service-tick``: the existing one-shot passes in a fixed order, each with its own
+    transactions and outcome. A phase that raised is listed in ``errors`` (its exception type
+    only) and the cycle continues; ``None`` means the phase did not run (shutting down)."""
+
+    correlation_id: str
+    email_sync: dict[str, object] | None = None
+    ai_recovery: dict[str, object] | None = None
+    tick: RuntimeTickResult | None = None
+    operator_sync: dict[str, object] | None = None
+    errors: tuple[ItemError, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        statuses = [phase.get("status") for phase in (self.email_sync, self.ai_recovery, self.operator_sync) if phase]
+        return not self.errors and (self.tick is None or self.tick.ok) and not any(
+            s in ("ERROR", "RECOVERY_REQUIRED") for s in statuses)
+
+
 class StartupReport(CoreModel):
     schema_version: int
     recovery: RecoveryReport

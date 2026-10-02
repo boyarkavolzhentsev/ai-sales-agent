@@ -99,11 +99,24 @@ THREAD_SUMMARIZER_PROMPT_V1 = PromptTemplate(
     ),
 )
 
+# Stage 20: the operator-invoked ``llm-check`` (connectivity only; fixed input, no customer or
+# knowledge data, never part of a business workflow).
+DEPLOYMENT_CHECK_PROMPT_V1 = PromptTemplate(
+    prompt_id="deployment_check",
+    version="1",
+    task=LLMTask.DEPLOYMENT_CHECK,
+    instructions=(
+        "This is a connectivity check. Reply with exactly the JSON object {\"ok\": true}.\n"
+        f"{UNTRUSTED_DATA_NOTICE}\n{_OUTPUT_RULE}"
+    ),
+)
+
 PROMPTS: tuple[PromptTemplate, ...] = (
     INTENT_CLASSIFIER_PROMPT_V1,
     KNOWLEDGE_SUFFICIENCY_PROMPT_V1,
     REPLY_COMPOSER_PROMPT_V1,
     THREAD_SUMMARIZER_PROMPT_V1,
+    DEPLOYMENT_CHECK_PROMPT_V1,
 )
 
 

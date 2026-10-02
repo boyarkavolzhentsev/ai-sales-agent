@@ -125,22 +125,36 @@ def build_provider_adapters(config: IntegrationConfig, secrets: ProviderSecrets,
                                      **({"api_factory": connectors.telegram_api} if connectors.telegram_api else {}))
         except TelegramError as exc:
             raise ProviderUnavailableError(ProviderCategory.OPERATOR_CHANNEL, exc.code.value) from None
-    llm = None
-    if config.llm.provider is not LLMProviderId.NONE:
-        from app.integrations.llm.provider import LLMConfigurationError, build_llm
-
-        try:
-            llm = build_llm(config.llm, secrets.llm, session=connectors.llm_session() if connectors.llm_session else None)
-        except LLMConfigurationError:
-            raise ProviderUnavailableError(ProviderCategory.LLM, "INVALID_PROVIDER_CONFIG") from None
-    embeddings = None
-    if config.embeddings.provider is not EmbeddingsProviderId.NONE:
-        from app.integrations.embeddings.provider import EmbeddingsConfigurationError, build_embeddings
-
-        try:
-            embeddings = build_embeddings(config.embeddings, secrets.embeddings,
-                                          session=connectors.embeddings_session() if connectors.embeddings_session else None)
-        except EmbeddingsConfigurationError:
-            raise ProviderUnavailableError(ProviderCategory.EMBEDDINGS, "INVALID_PROVIDER_CONFIG") from None
+    llm = build_llm_adapter(config, secrets, connectors)
+    embeddings = build_embeddings_adapter(config, secrets, connectors)
     return ProviderAdapters(**email, operator_channel=channel, llm_transport=llm, embeddings_transport=embeddings,
                             not_implemented=missing)
+
+
+def build_llm_adapter(config: IntegrationConfig, secrets: ProviderSecrets,
+                      connectors: ProviderConnectors | None = None) -> LLMTransport | None:
+    """The selected LLM adapter alone (None for NONE). Pure: no request is made."""
+    if config.llm.provider is LLMProviderId.NONE:
+        return None
+    from app.integrations.llm.provider import LLMConfigurationError, build_llm
+
+    connectors = connectors or ProviderConnectors()
+    try:
+        return build_llm(config.llm, secrets.llm, session=connectors.llm_session() if connectors.llm_session else None)
+    except LLMConfigurationError:
+        raise ProviderUnavailableError(ProviderCategory.LLM, "INVALID_PROVIDER_CONFIG") from None
+
+
+def build_embeddings_adapter(config: IntegrationConfig, secrets: ProviderSecrets,
+                             connectors: ProviderConnectors | None = None) -> EmbeddingTransport | None:
+    """The selected embeddings adapter alone (None for NONE). Pure: no request is made."""
+    if config.embeddings.provider is EmbeddingsProviderId.NONE:
+        return None
+    from app.integrations.embeddings.provider import EmbeddingsConfigurationError, build_embeddings
+
+    connectors = connectors or ProviderConnectors()
+    try:
+        return build_embeddings(config.embeddings, secrets.embeddings,
+                                session=connectors.embeddings_session() if connectors.embeddings_session else None)
+    except EmbeddingsConfigurationError:
+        raise ProviderUnavailableError(ProviderCategory.EMBEDDINGS, "INVALID_PROVIDER_CONFIG") from None

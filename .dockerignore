@@ -1,0 +1,36 @@
+# Allowlist: the image needs only the runtime code and its requirements.
+*
+!app/
+!requirements.txt
+
+# Never in the build context, even inside allowed directories.
+.git
+.env
+.env.*
+.local/
+**/.local/
+**/credentials*.json
+**/client_secret*.json
+**/service-account*.json
+**/token*.json
+**/*.pem
+**/*.key
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.sqlite3-*
+**/*.log
+logs/
+data/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.vscode/
+.idea/
+tests/
+**/*.tmp
+**/*.swp

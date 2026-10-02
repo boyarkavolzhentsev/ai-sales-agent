@@ -30,6 +30,8 @@ class LLMTask(StrEnum):
     QUALIFICATION_EXTRACTION = "QUALIFICATION_EXTRACTION"
     COMMERCIAL_EXTRACTION = "COMMERCIAL_EXTRACTION"
     SALES_ADVICE = "SALES_ADVICE"
+    # Stage 20: the explicit, operator-invoked ``llm-check`` (no customer or knowledge data).
+    DEPLOYMENT_CHECK = "DEPLOYMENT_CHECK"
 
 
 class SectionKind(StrEnum):

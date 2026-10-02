@@ -78,6 +78,11 @@ class SqliteOperatorChannelRepository:
 
     # ---- Confirmations ------------------------------------------------------------------------------
 
+    def notification_counts(self) -> dict[str, int]:
+        """Notifications per status (operational visibility; ids and content stay out)."""
+        rows = self._tx.fetch_all("SELECT status, COUNT(*) FROM operator_notifications GROUP BY status")
+        return {str(row[0]): int(row[1]) for row in rows}
+
     def get_confirmation(self, confirmation_id: str) -> OperatorConfirmation | None:
         row = self._tx.fetch_one("SELECT data FROM operator_confirmations WHERE confirmation_id = ?", (confirmation_id,))
         return load(OperatorConfirmation, row)

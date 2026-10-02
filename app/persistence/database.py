@@ -113,6 +113,25 @@ class Database:
             connection.execute("ROLLBACK")
             raise translate_sqlite_error(exc) from exc
 
+    @staticmethod
+    @contextmanager
+    def read_only(path: str | Path) -> Iterator[UnitOfWork]:
+        """A read-only snapshot of an existing database file (``mode=ro``): repositories can
+        read, every write fails, nothing is created or migrated. For operational checks."""
+        try:
+            connection = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True, isolation_level=None)
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN")  # deferred: a consistent snapshot without taking a write lock
+        except sqlite3.Error as exc:
+            raise translate_sqlite_error(exc) from exc
+        tx = Transaction(connection)
+        try:
+            yield UnitOfWork(tx)
+        finally:
+            tx.close()
+            connection.execute("ROLLBACK")
+            connection.close()
+
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:
             raise PersistenceError("database is not connected")

@@ -30,6 +30,8 @@ from app.integrations.registry import (
     ProviderAdapters,
     ProviderConnectors,
     ProviderUnavailableError,
+    build_embeddings_adapter,
+    build_llm_adapter,
     build_provider_adapters,
     is_implemented,
 )
@@ -65,6 +67,8 @@ __all__ = [
     "ProviderState",
     "ProviderStatus",
     "TelegramSecrets",
+    "build_embeddings_adapter",
+    "build_llm_adapter",
     "build_provider_adapters",
     "evaluate",
     "is_implemented",

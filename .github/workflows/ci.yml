@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: python -m pip install -r requirements-dev.txt
+      - name: Test (sockets are blocked by tests/conftest.py; no provider is contacted)
+        run: python -m pytest -q -p no:cacheprovider
+      - name: Compile
+        run: python -m compileall -q app tests
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t ai-sales-agent:ci .
+      - name: Offline smoke (no provider, no secret)
+        run: |
+          docker volume create agent-data
+          cat > smoke.env <<'EOF'
+          SALES_AGENT_MODE=local
+          SALES_AGENT_DATABASE_PATH=/data/db/agent.sqlite3
+          SALES_AGENT_SENDER_NAME=Example Seller
+          SALES_AGENT_COMPANY_NAME=Example Company
+          SALES_AGENT_MAILBOXES=sales@example.com
+          SALES_AGENT_TIMEZONE=Europe/Berlin
+          SALES_AGENT_WINDOW_DAYS=MON,TUE,WED,THU,FRI
+          SALES_AGENT_WINDOW_START=09:00
+          SALES_AGENT_WINDOW_END=17:00
+          SALES_AGENT_MAX_SENDS_PER_DAY=5
+          SALES_AGENT_MAX_NEW_CONTACTS_PER_DAY=5
+          SALES_AGENT_MAX_FOLLOW_UPS_PER_DAY=5
+          SALES_AGENT_MAX_FOLLOW_UPS_PER_CONTACT=1
+          SALES_AGENT_MIN_FOLLOW_UP_INTERVAL_HOURS=48
+          SALES_AGENT_KILL_SWITCH=true
+          SALES_AGENT_KILL_SWITCH_REASON=ci smoke
+          SALES_AGENT_OPERATOR_IDS=operator-1
+          EOF
+          run() { docker run --rm --env-file smoke.env -v agent-data:/data ai-sales-agent:ci "$@"; }
+          run provider-status
+          run init
+          run health
+          test "$(docker run --rm --entrypoint id ai-sales-agent:ci -u)" = "10001"
