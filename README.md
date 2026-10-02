@@ -155,9 +155,11 @@ docs/
 
 ## Documentation
 
+- [Architecture overview](docs/architecture.md)
 - [Deployment runbook](docs/deployment.md)
 - [Provider integrations](docs/integrations.md)
 - [Knowledge base format](knowledge_base/README.md)
+- [Security guidance](SECURITY.md)
 
 ## Project status
 
