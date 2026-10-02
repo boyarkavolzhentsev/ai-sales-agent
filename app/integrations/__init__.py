@@ -33,7 +33,7 @@ from app.integrations.registry import (
     build_provider_adapters,
     is_implemented,
 )
-from app.integrations.secrets import GmailSecrets, LLMSecrets, ProviderSecrets, TelegramSecrets
+from app.integrations.secrets import EmbeddingsSecrets, GmailSecrets, LLMSecrets, ProviderSecrets, TelegramSecrets
 from app.integrations.status import IntegrationStatus, ProviderState, ProviderStatus, evaluate
 
 __all__ = [
@@ -43,6 +43,7 @@ __all__ = [
     "EmailProviderId",
     "EmbeddingsProviderConfig",
     "EmbeddingsProviderId",
+    "EmbeddingsSecrets",
     "GmailSecrets",
     "IntegrationCode",
     "IntegrationConfig",

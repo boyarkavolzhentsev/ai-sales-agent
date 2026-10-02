@@ -292,10 +292,10 @@ def test_a_replay_of_a_completed_message_calls_no_model(tmp_path: Path) -> None:
 def test_a_fresh_database_reaches_v12_with_a_minimal_job_table(tmp_path: Path) -> None:
     path = tmp_path / "fresh.sqlite3"
     with Database(path) as db:
-        assert db.initialize_schema(FrozenClock(NOW)) == latest_version() == 12
+        assert db.initialize_schema(FrozenClock(NOW)) == latest_version() >= 12
     raw = sqlite3.connect(path)
     try:
-        assert current_version(raw) == 12 and MIGRATIONS[-1].name == "ai_enrichment_jobs"
+        assert current_version(raw) == latest_version() and MIGRATIONS[11].name == "ai_enrichment_jobs"
         columns = [row[1] for row in raw.execute("PRAGMA table_info(ai_enrichment_jobs)")]
     finally:
         raw.close()
@@ -319,8 +319,8 @@ def test_a_v11_database_upgrades_intact_and_repeatably(tmp_path: Path) -> None:
         lead_id = opportunity_lead(db)
         before = (lead(db, lead_id), active_opportunity(db, lead_id))
     with Database(path) as db:
-        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=1))) == 12
-        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=2))) == 12  # idempotent
+        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=1))) == latest_version()
+        assert db.initialize_schema(FrozenClock(NOW + timedelta(days=2))) == latest_version()  # idempotent
         assert (lead(db, lead_id), active_opportunity(db, lead_id)) == before
         assert jobs(db) == []  # nothing backfilled
         with db.transaction() as uow:

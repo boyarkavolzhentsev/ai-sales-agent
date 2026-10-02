@@ -8,7 +8,10 @@ Adapters are the existing boundary Protocols; a future real provider implements 
   ``CommercialExtractor`` (Stage 13): LLM-backed (app.ai) when an LLM provider is selected
   (Stage 18), injected fakes in tests; a ``PriceCatalog`` (default: approved internal
   knowledge facts),
-- ``MailboxReader`` (Stage 16 inbound mailbox sync; Gmail).
+- ``MailboxReader`` (Stage 16 inbound mailbox sync; Gmail),
+- ``EmbeddingTransport`` (Stage 19): when configured, Stage 6 retrieves knowledge
+  semantically (``SemanticRetriever``) and ``knowledge-index`` embeds approved chunks;
+  without it, retrieval stays lexical and nothing is embedded.
 The Stage 14 execution coordinator is built over the same subsystem instances and is told
 which capabilities exist, so a missing adapter only makes an action non-executable.
 The offline default configures none of the provider adapters, so the capabilities that
@@ -20,15 +23,18 @@ around one Database and one Clock.
 """
 
 from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from typing import Any
 
 from app.campaign import CampaignEnroller, CampaignExecutor, CampaignScheduler
 from app.conversation import FollowUpExecutor, FollowUpScheduler
 from app.dispatch import DispatchReconciler, DispatchService, EmailTransport
+from app.embeddings import EmbeddingTransport
 from app.enrichment import EnrichmentService
 from app.inbound import InboundService
 from app.integrations import ProviderConnectors, build_provider_adapters
 from app.integrations.mailbox import MailboxReader, MailboxSync
+from app.knowledge import KnowledgeIndexer, LexicalRetriever, SemanticRetriever
 from app.llm import LLMTransport, StructuredLLM
 from app.operator import OperatorAuthenticator, OperatorCredential, OperatorService
 from app.commercial import CommercialExtractor, CommercialService, PriceCatalog
@@ -57,6 +63,7 @@ class Adapters:
     price_catalog: PriceCatalog | None = None
     mailbox: MailboxReader | None = None
     operator_channel: Any = None  # the Telegram adapters (Stage 17)
+    embeddings_transport: EmbeddingTransport | None = None  # semantic retrieval (Stage 19)
 
 
 def offline_adapters() -> Adapters:
@@ -87,6 +94,9 @@ def configured_adapters(config: RuntimeConfig, base: Adapters | None = None,
                            qualification_extractor=LLMQualificationExtractor(llm, locale=locale),
                            sales_advisor=LLMSalesAdvisor(llm, locale=locale),
                            commercial_extractor=LLMCommercialExtractor(llm, locale=locale))
+    if built.embeddings_transport is not None:
+        # Independent of the LLM provider; building it makes no request.
+        adapters = replace(adapters, embeddings_transport=built.embeddings_transport)
     if built.operator_channel is not None:
         # Telegram credentials are verified by Telegram's authenticator; any other scheme
         # still goes to the configured one (DenyAll in production, injected in tests).
@@ -107,6 +117,7 @@ class Capabilities:
     qualification_extraction: bool = False
     commercial_extraction: bool = False
     sales_advice: bool = False
+    semantic_retrieval: bool = False
 
     @classmethod
     def of(cls, adapters: Adapters) -> "Capabilities":
@@ -120,6 +131,7 @@ class Capabilities:
             qualification_extraction=adapters.qualification_extractor is not None,
             commercial_extraction=adapters.commercial_extractor is not None,
             sales_advice=adapters.sales_advisor is not None,
+            semantic_retrieval=adapters.embeddings_transport is not None,
         )
 
 
@@ -139,6 +151,7 @@ class Services:
     mailbox_sync: MailboxSync | None = None
     operator_channel: Any = None  # OperatorChannelSync, composed by the runtime (Stage 17)
     enrichment: EnrichmentService | None = None  # durable Stage 12/13 extraction jobs (Stage 18)
+    knowledge_indexer: KnowledgeIndexer | None = None  # embeds approved chunks (Stage 19)
 
 
 def build_services(db: Database, clock: Clock, config: RuntimeConfig, adapters: Adapters) -> Services:
@@ -147,9 +160,18 @@ def build_services(db: Database, clock: Clock, config: RuntimeConfig, adapters: 
     dispatch = None
     if adapters.email_transport is not None:
         dispatch = DispatchService(db, clock, config.dispatch_config(), adapters.email_transport, adapters.reconciler)
+    embeddings = adapters.embeddings_transport
+    settings = config.integrations.embeddings
+    knowledge = (SemanticRetriever(db, embeddings, min_similarity=settings.min_similarity) if embeddings is not None
+                 else LexicalRetriever(db))
+    indexer = None
+    if embeddings is not None:
+        # A claim outlives one request (timeout, plus at most one retry) with margin.
+        indexer = KnowledgeIndexer(db, clock, embeddings, lease=timedelta(seconds=max(60, 3 * settings.timeout_seconds)))
     inbound = None
     if adapters.llm_transport is not None:
-        inbound = InboundService(db, StructuredLLM(adapters.llm_transport, clock), clock, config.inbound_config())
+        inbound = InboundService(db, StructuredLLM(adapters.llm_transport, clock), clock, config.inbound_config(),
+                                 knowledge=knowledge)
     campaign_scheduler = CampaignScheduler(db, clock, campaign_config)
     campaign_executor = CampaignExecutor(db, clock, campaign_config)
     follow_up_scheduler = FollowUpScheduler(db, clock, follow_up_config)
@@ -190,4 +212,5 @@ def build_services(db: Database, clock: Clock, config: RuntimeConfig, adapters: 
         orchestrator=orchestrator,
         mailbox_sync=MailboxSync(db, clock, adapters.mailbox) if adapters.mailbox is not None else None,
         enrichment=enrichment,
+        knowledge_indexer=indexer,
     )

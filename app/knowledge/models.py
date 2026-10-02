@@ -85,8 +85,26 @@ class IngestResult(CoreModel):
     chunk_count: NonNegativeInt
 
 
+class RetrievalMethod(StrEnum):
+    LEXICAL = "LEXICAL"  # FTS5 candidates, BM25 over the eligible corpus (Stage 4)
+    SEMANTIC = "SEMANTIC"  # cosine similarity of stored chunk vectors (Stage 19)
+
+
+class RetrievalInfo(CoreModel):
+    """How the evidence was selected: identifiers and counts only, never text or vectors."""
+
+    method: RetrievalMethod
+    provider: StrictText | None = None
+    model: StrictText | None = None
+    dimensions: Annotated[int, Field(ge=1)] | None = None
+    min_similarity: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+    eligible_chunks: NonNegativeInt = 0
+    searchable_chunks: NonNegativeInt = 0
+
+
 class KnowledgeResult(CoreModel):
     """Retrieved evidence and the deterministic gate verdict for one query."""
 
     evidence: tuple[KnowledgeEvidence, ...]
     assessment: KnowledgeAssessment
+    retrieval: RetrievalInfo = RetrievalInfo(method=RetrievalMethod.LEXICAL)

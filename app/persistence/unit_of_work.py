@@ -47,6 +47,7 @@ from app.persistence.repositories.sqlite import (
     SqliteFollowUpJobRepository,
     SqliteFollowUpPlanRepository,
     SqliteIdempotencyRepository,
+    SqliteKnowledgeEmbeddingRepository,
     SqliteKnowledgeIndexRepository,
     SqliteKnowledgeSourceMetaRepository,
     SqliteLeadQualificationRepository,
@@ -111,6 +112,8 @@ class UnitOfWork:
         # Operator channel synchronization (Stage 17).
         self.operator_channel = SqliteOperatorChannelRepository(tx)
         self.enrichment_jobs = SqliteEnrichmentJobRepository(tx)
+        # Knowledge embeddings for semantic retrieval (Stage 19).
+        self.knowledge_embeddings = SqliteKnowledgeEmbeddingRepository(tx)
 
     def savepoint(self) -> AbstractContextManager[None]:
         """All-or-nothing sub-unit: writes inside it are undone if it raises, while the

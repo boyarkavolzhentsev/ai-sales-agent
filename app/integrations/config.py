@@ -73,6 +73,15 @@ class KnowledgeProviderConfig(CoreModel):
 
 class EmbeddingsProviderConfig(CoreModel):
     provider: EmbeddingsProviderId = EmbeddingsProviderId.NONE
+    # The provider's embedding model id; part of every stored vector's identity.
+    model: ModelName | None = None
+    # Optional reduced output size (models that support it); None = the model's native size.
+    dimensions: Annotated[int, Field(ge=1, le=8192)] | None = None
+    # Bound of every embeddings API call.
+    timeout_seconds: Annotated[int, Field(ge=1, le=120)] = 30
+    # Minimum cosine similarity for a chunk to count as relevant at all (the knowledge gate
+    # still decides sufficiency). Model-dependent; tune per deployment.
+    min_similarity: Annotated[float, Field(gt=0.0, lt=1.0)] = 0.30
 
 
 class IntegrationConfig(CoreModel):

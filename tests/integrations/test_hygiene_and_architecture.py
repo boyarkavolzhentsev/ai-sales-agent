@@ -23,7 +23,7 @@ NETWORK = ("socket", "ssl", "http", "urllib", "requests", "httpx", "aiohttp", "s
            "threading", "subprocess")
 # The provider-neutral mailbox sync (Stage 16) also uses persistence and the inbound envelope.
 MAY_IMPORT = ("app.core", "app.integrations", "app.dispatch", "app.llm", "app.operator", "app.persistence",
-              "app.inbound.models")
+              "app.inbound.models", "app.embeddings")
 
 
 def imports(path: Path) -> list[str]:
@@ -99,8 +99,9 @@ def test_only_the_runtime_depends_on_the_integration_layer() -> None:
 
 
 def test_no_schema_change() -> None:
-    # Stage 15 changed no schema; v10/v11/v12 are Stages 16/17/18 (mailbox sync, operator channel, AI enrichment jobs).
-    assert MIGRATIONS[8].name == "commercial_decisioning" and latest_version() == len(MIGRATIONS) == 12
+    # Stage 15 changed no schema; v10..v13 are Stages 16/17/18/19 (mailbox sync, operator channel, AI enrichment
+    # jobs, knowledge embeddings).
+    assert MIGRATIONS[8].name == "commercial_decisioning" and latest_version() == len(MIGRATIONS) == 13
 
 
 def test_no_real_secret_shapes_in_tracked_text() -> None:

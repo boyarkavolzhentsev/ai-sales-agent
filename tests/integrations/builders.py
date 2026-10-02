@@ -11,7 +11,8 @@ CLIENT_SECRET = "test-secret-do-not-use-client-secret"
 REFRESH_TOKEN = "test-secret-do-not-use-refresh-token"
 API_KEY = "test-secret-do-not-use-api-key"
 BOT_TOKEN = "123456:test-secret-do-not-use-bot-token"
-FAKE_SECRETS = (CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, API_KEY, BOT_TOKEN)
+EMBEDDINGS_API_KEY = "test-secret-do-not-use-embeddings-api-key"
+FAKE_SECRETS = (CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, API_KEY, BOT_TOKEN, EMBEDDINGS_API_KEY)
 CREDENTIAL_CONTENT = '{"installed": {"client_secret": "test-secret-do-not-use-file-content"}}'
 
 
@@ -42,6 +43,12 @@ def llm(provider: str = "openai", **overrides: str | None) -> dict[str, str | No
 
 def telegram(**overrides: str | None) -> dict[str, str | None]:
     return {"OPERATOR_PROVIDER": "telegram", "TELEGRAM_BOT_TOKEN": BOT_TOKEN, "TELEGRAM_OPERATOR_CHAT_IDS": "1001=op-alice,2002=op-bob"} | overrides
+
+
+def embeddings(provider: str = "openai", **overrides: str | None) -> dict[str, str | None]:
+    """Stage 19: semantic retrieval, required in production."""
+    return {"EMBEDDINGS_PROVIDER": provider, "EMBEDDINGS_MODEL": "embed-model-under-test",
+            "EMBEDDINGS_API_KEY": EMBEDDINGS_API_KEY} | overrides
 
 
 NO_LLM: dict[str, str | None] = {"LLM_PROVIDER": None, "LLM_MODEL": None, "LLM_API_KEY": None}

@@ -74,7 +74,7 @@ from app.inbound.prefilter import prefilter
 from app.inbound.records import Events, audit_event, llm_call_summary, provenance_record, ref
 from app.inbound.thread_resolution import find_thread
 from app.inbound.unsubscribe import is_unsubscribe_request
-from app.knowledge import KnowledgeResult, evaluate_knowledge
+from app.knowledge import KnowledgeResult, KnowledgeRetrievalError, KnowledgeRetriever, LexicalRetriever
 from app.knowledge.retrieval import select_for_query
 from app.llm import (
     ClassificationOutcome,
@@ -176,11 +176,16 @@ def normalize_subject(subject: str) -> str:
 
 
 class InboundService:
-    def __init__(self, db: Database, llm: StructuredLLM, clock: Clock, config: InboundConfig) -> None:
+    def __init__(self, db: Database, llm: StructuredLLM, clock: Clock, config: InboundConfig, *,
+                 knowledge: KnowledgeRetriever | None = None) -> None:
+        """``knowledge``: how evidence is retrieved (default: the lexical Stage 4 index;
+        Stage 19: semantic retrieval when an embeddings provider is configured). Either way
+        the same deterministic gate decides sufficiency."""
         self._db = db
         self._llm = llm
         self._clock = clock
         self._config = config
+        self._knowledge = knowledge or LexicalRetriever(db)
 
     # ---- entry point ----------------------------------------------------------------------
 
@@ -477,8 +482,11 @@ class InboundService:
         query = plan.query
         if query is None:
             return analysis.escalate(EscalationReason.NO_ANSWERABLE_QUESTIONS)
-        with self._db.transaction() as uow:
-            knowledge = evaluate_knowledge(uow, query, self._clock.now())
+        try:
+            knowledge = self._knowledge.evaluate(query, self._clock.now())
+        except KnowledgeRetrievalError as exc:
+            # Fail closed: no evidence means no draft; never fall back to the model's own knowledge.
+            return replace(analysis, query=query).escalate(EscalationReason.KNOWLEDGE_RETRIEVAL_FAILURE, detail=exc.code.value)
         analysis = replace(analysis, query=query, knowledge=knowledge, assessment=knowledge.assessment)
 
         if knowledge.assessment.decision is KnowledgeDecision.SUFFICIENT:
@@ -603,6 +611,7 @@ class InboundService:
                         for e in evidence
                     ],
                     "deterministic_assessment": analysis.knowledge.assessment.model_dump(mode="json"),
+                    "retrieval": analysis.knowledge.retrieval.model_dump(mode="json"),
                     "final_assessment": analysis.assessment.model_dump(mode="json") if analysis.assessment else None,
                     "sufficiency_llm": llm_call_summary(analysis.sufficiency.metadata) if analysis.sufficiency else None,
                 })

@@ -181,7 +181,7 @@ def test_production_still_fails_closed_with_gmail_ready(tmp_path: Path) -> None:
     app = gmail_runtime(tmp_path, FakeGmailApi(), MODE="production")
     with pytest.raises(StartupError) as error:
         app.start()
-    assert str(error.value) == "PRODUCTION_NOT_READY: LLM:DISABLED, OPERATOR_CHANNEL:DISABLED"
+    assert str(error.value) == "PRODUCTION_NOT_READY: LLM:DISABLED, OPERATOR_CHANNEL:DISABLED, EMBEDDINGS:DISABLED"
 
 
 def run(argv: list[str], environ: dict[str, str]) -> tuple[int, dict[str, object], str]:

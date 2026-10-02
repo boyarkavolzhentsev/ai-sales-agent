@@ -2,7 +2,7 @@
 
 Only providers the existing contracts can host are listed: the email transport and
 reconciler (Stage 8), the LLM transport (Stage 5), the operator authenticator (Stage 7),
-the local knowledge index (Stage 4). Selecting a provider is configuration; whether an
+the local knowledge index (Stage 4), the embeddings transport (Stage 19). Selecting a provider is configuration; whether an
 implementation exists is a separate fact (see ``app.integrations.registry``).
 """
 
@@ -42,6 +42,10 @@ class KnowledgeProviderId(StrEnum):
 
 
 class EmbeddingsProviderId(StrEnum):
-    """No embeddings provider exists yet (Stage 4 retrieval is lexical)."""
+    """Embeddings for semantic retrieval over the LOCAL knowledge index (Stage 19). NONE keeps
+    the lexical Stage 4 retrieval. Independent of the LLM provider (e.g. an Anthropic LLM with
+    OpenAI embeddings). Anthropic has no first-party embeddings API, so it is not listed."""
 
     NONE = "NONE"
+    OPENAI = "OPENAI"
+    GEMINI = "GEMINI"

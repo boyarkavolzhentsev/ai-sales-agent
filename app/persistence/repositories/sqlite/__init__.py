@@ -24,6 +24,7 @@ from app.persistence.repositories.sqlite.dnc import SqliteDoNotContactRepository
 from app.persistence.repositories.sqlite.escalations import SqliteEscalationRepository
 from app.persistence.repositories.sqlite.followups import SqliteFollowUpPlanRepository
 from app.persistence.repositories.sqlite.idempotency import SqliteIdempotencyRepository
+from app.persistence.repositories.sqlite.knowledge_embeddings import SqliteKnowledgeEmbeddingRepository
 from app.persistence.repositories.sqlite.knowledge_index import SqliteKnowledgeIndexRepository
 from app.persistence.repositories.sqlite.knowledge_meta import SqliteKnowledgeSourceMetaRepository
 from app.persistence.repositories.sqlite.leads import SqliteLeadRepository
@@ -62,6 +63,7 @@ __all__ = [
     "SqliteFollowUpJobRepository",
     "SqliteFollowUpPlanRepository",
     "SqliteIdempotencyRepository",
+    "SqliteKnowledgeEmbeddingRepository",
     "SqliteKnowledgeIndexRepository",
     "SqliteKnowledgeSourceMetaRepository",
     "SqliteLeadQualificationRepository",

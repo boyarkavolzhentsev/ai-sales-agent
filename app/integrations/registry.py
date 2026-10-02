@@ -7,22 +7,25 @@ It never substitutes a fake: a configured provider is not an implemented one, an
 provider that cannot be used now (e.g. not authorized) raises ``ProviderUnavailableError``.
 
 Implemented: LOCAL knowledge (the Stage 4 index), GMAIL email (Stage 16), TELEGRAM
-operator channel (Stage 17) and the OPENAI, ANTHROPIC and GEMINI LLMs (Stage 18). Provider
-code is imported only when that provider is selected, so an offline deployment never
-loads it. Building Gmail adapters reads the local token, refreshes it if needed and makes
+operator channel (Stage 17), the OPENAI, ANTHROPIC and GEMINI LLMs (Stage 18) and OPENAI and
+GEMINI embeddings (Stage 19, independent of the LLM selection). Provider code is imported
+only when that provider is selected, so an offline deployment never loads it. Building Gmail adapters reads the local token, refreshes it if needed and makes
 one read (the account profile) to confirm the mailbox; it never starts the interactive
 OAuth flow. Building Telegram adapters makes one ``getMe`` call to prove the bot token
-works. Building an LLM adapter makes no request at all (no billable call at startup).
+works. Building an LLM or embeddings adapter makes no request at all (no billable call at
+startup).
 """
 
 from dataclasses import dataclass
 from typing import Any
 
 from app.dispatch import DispatchReconciler, EmailTransport
+from app.embeddings import EmbeddingTransport
 from app.integrations.config import IntegrationConfig
 from app.integrations.mailbox import MailboxReader
 from app.integrations.providers import (
     EmailProviderId,
+    EmbeddingsProviderId,
     KnowledgeProviderId,
     LLMProviderId,
     OperatorProviderId,
@@ -40,6 +43,8 @@ IMPLEMENTED: frozenset[tuple[ProviderCategory, str]] = frozenset({
     (ProviderCategory.LLM, LLMProviderId.OPENAI.value),
     (ProviderCategory.LLM, LLMProviderId.ANTHROPIC.value),
     (ProviderCategory.LLM, LLMProviderId.GEMINI.value),
+    (ProviderCategory.EMBEDDINGS, EmbeddingsProviderId.OPENAI.value),
+    (ProviderCategory.EMBEDDINGS, EmbeddingsProviderId.GEMINI.value),
 })
 
 
@@ -60,12 +65,13 @@ class ProviderUnavailableError(Exception):
 class ProviderConnectors:
     """Seam beneath the adapters (tests): ``gmail_api(GmailAuth, timeout_seconds)`` returns
     a ``GmailApi``; ``telegram_api(token, timeout_seconds)`` a ``TelegramApi``;
-    ``llm_session()`` the HTTP session the LLM adapter posts through. None means the real
-    client."""
+    ``llm_session()`` the HTTP session the LLM adapter posts through; ``embeddings_session()``
+    the one the embeddings adapter posts through. None means the real client."""
 
     gmail_api: Any = None
     telegram_api: Any = None
     llm_session: Any = None
+    embeddings_session: Any = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,7 @@ class ProviderAdapters:
     mailbox: MailboxReader | None = None
     operator_channel: Any = None  # TelegramAdapters (api, bot identity, authenticator)
     llm_transport: LLMTransport | None = None
+    embeddings_transport: EmbeddingTransport | None = None
     authenticator: OperatorAuthenticator | None = None
     # Selected providers whose adapter does not exist yet: (category, provider id).
     not_implemented: tuple[tuple[ProviderCategory, str], ...] = ()
@@ -126,4 +133,14 @@ def build_provider_adapters(config: IntegrationConfig, secrets: ProviderSecrets,
             llm = build_llm(config.llm, secrets.llm, session=connectors.llm_session() if connectors.llm_session else None)
         except LLMConfigurationError:
             raise ProviderUnavailableError(ProviderCategory.LLM, "INVALID_PROVIDER_CONFIG") from None
-    return ProviderAdapters(**email, operator_channel=channel, llm_transport=llm, not_implemented=missing)
+    embeddings = None
+    if config.embeddings.provider is not EmbeddingsProviderId.NONE:
+        from app.integrations.embeddings.provider import EmbeddingsConfigurationError, build_embeddings
+
+        try:
+            embeddings = build_embeddings(config.embeddings, secrets.embeddings,
+                                          session=connectors.embeddings_session() if connectors.embeddings_session else None)
+        except EmbeddingsConfigurationError:
+            raise ProviderUnavailableError(ProviderCategory.EMBEDDINGS, "INVALID_PROVIDER_CONFIG") from None
+    return ProviderAdapters(**email, operator_channel=channel, llm_transport=llm, embeddings_transport=embeddings,
+                            not_implemented=missing)

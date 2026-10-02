@@ -38,6 +38,7 @@ from app.integrations.mailbox import MailboxSyncResult, SyncStatus
 from app.integrations.channel import OperatorSyncResult, OperatorSyncStatus
 from app.runtime.config import RuntimeMode
 from app.enrichment import AIRecoveryResult
+from app.knowledge import IndexStatus, IngestStatus, KnowledgeError, ingest_directory
 from app.runtime.container import Adapters, Capabilities, Services, build_services, configured_adapters, offline_adapters
 from app.runtime.errors import CapabilityUnavailableError, RuntimeBusyError, RuntimeNotReadyError, StartupError
 from app.runtime.recovery import inspect_recovery
@@ -45,6 +46,7 @@ from app.runtime.results import (
     CapabilityReport,
     DispatchPhaseResult,
     HealthReport,
+    KnowledgeIndexResult,
     PhaseStatus,
     ReconciliationResult,
     RuntimeState,
@@ -321,6 +323,34 @@ class SalesAgentRuntime:
                 return AIRecoveryResult(status="SKIPPED", reason="LLM_NOT_CONFIGURED")
             return services.enrichment.recover(limit=limit or self._config.worker.batch_limit)
 
+    def knowledge_index(self) -> KnowledgeIndexResult:
+        """One bounded pass (Stage 19), never at startup and never a loop: ingest the
+        configured approved-knowledge directory (validated as a whole first; one transaction;
+        identical versions are no-ops; nothing is approved here), then embed the approved,
+        usable chunks that have no current vector and delete stale vectors. Without an
+        embeddings provider only the ingestion runs (lexical retrieval needs nothing else)."""
+        with self._work() as services:
+            directory = self._config.integrations.knowledge.directory
+            ingested = unchanged = 0
+            if directory is not None:
+                try:
+                    with self._db.transaction() as uow:
+                        results = ingest_directory(uow, directory, now=self._clock.now())
+                except (KnowledgeError, OSError) as exc:  # the type only: messages may quote source content
+                    return KnowledgeIndexResult(status=PhaseStatus.ERROR, reason="KNOWLEDGE_SOURCE_INVALID",
+                                                ingestion_error=type(exc).__name__)
+                ingested = sum(1 for r in results if r.status is IngestStatus.INGESTED)
+                unchanged = len(results) - ingested
+            indexer = services.knowledge_indexer
+            if indexer is None:
+                return KnowledgeIndexResult(status=PhaseStatus.OK if directory is not None else PhaseStatus.SKIPPED,
+                                            reason="EMBEDDINGS_NOT_CONFIGURED", sources_ingested=ingested,
+                                            sources_unchanged=unchanged)
+            report = indexer.run()
+            return KnowledgeIndexResult(status=PhaseStatus.OK if report.status is IndexStatus.OK else PhaseStatus.ERROR,
+                                        reason=report.error_code, sources_ingested=ingested, sources_unchanged=unchanged,
+                                        embeddings=report)
+
     def _with_operator_channel(self, services: Services) -> Services:
         channel = self._adapters.operator_channel
         if channel is None:
@@ -382,7 +412,8 @@ class SalesAgentRuntime:
                                 operator_channel=self._capabilities.operator_channel,
                                 qualification_extraction=self._capabilities.qualification_extraction,
                                 commercial_extraction=self._capabilities.commercial_extraction,
-                                sales_advice=self._capabilities.sales_advice)
+                                sales_advice=self._capabilities.sales_advice,
+                                semantic_retrieval=self._capabilities.semantic_retrieval)
 
 
 def _process_inbound(services: Services, envelope: InboundEnvelope, correlation_id: str) -> InboundResult:

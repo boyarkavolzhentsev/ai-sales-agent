@@ -6,6 +6,7 @@ from enum import StrEnum
 
 from app.core.models.base import CoreModel
 from app.integrations import IntegrationStatus
+from app.knowledge import IndexReport
 
 
 class RuntimeState(StrEnum):
@@ -108,6 +109,21 @@ class CapabilityReport(CoreModel):
     qualification_extraction: bool = False
     commercial_extraction: bool = False
     sales_advice: bool = False
+    semantic_retrieval: bool = False  # an embeddings provider is configured (Stage 19)
+
+
+class KnowledgeIndexResult(CoreModel):
+    """One ``knowledge-index`` run: ingestion of the configured knowledge directory, then
+    the embedding index. Counts and codes only: no knowledge text, no vectors."""
+
+    status: PhaseStatus
+    reason: str | None = None
+    # Ingestion of KNOWLEDGE_DIR (when configured): source versions ingested / already present.
+    sources_ingested: int = 0
+    sources_unchanged: int = 0
+    ingestion_error: str | None = None  # an exception type: the directory was rejected as a whole
+    # The embedding index (when an embeddings provider is configured).
+    embeddings: IndexReport | None = None
 
 
 class StartupReport(CoreModel):

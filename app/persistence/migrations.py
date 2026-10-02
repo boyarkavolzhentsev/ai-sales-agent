@@ -27,6 +27,7 @@ from app.persistence.schema import (
     V10_EMAIL_PROVIDER_SYNC_SCHEMA,
     V11_OPERATOR_CHANNEL_SYNC_SCHEMA,
     V12_AI_ENRICHMENT_JOBS_SCHEMA,
+    V13_KNOWLEDGE_EMBEDDINGS_SCHEMA,
 )
 from app.persistence.serialization import to_utc_text
 
@@ -121,6 +122,11 @@ def v12_ai_enrichment_jobs(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def v13_knowledge_embeddings(connection: sqlite3.Connection) -> None:
+    for statement in V13_KNOWLEDGE_EMBEDDINGS_SCHEMA:
+        connection.execute(statement)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial_schema", v1_initial_schema),
     Migration(2, "quota_reservations", v2_quota_reservations),
@@ -134,6 +140,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(10, "email_provider_sync", v10_email_provider_sync),
     Migration(11, "operator_channel_sync", v11_operator_channel_sync),
     Migration(12, "ai_enrichment_jobs", v12_ai_enrichment_jobs),
+    Migration(13, "knowledge_embeddings", v13_knowledge_embeddings),
 )
 
 

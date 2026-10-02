@@ -30,6 +30,7 @@ from app.integrations.config import IntegrationConfig
 from app.integrations.errors import IntegrationCode, IntegrationProblem
 from app.integrations.providers import (
     EmailProviderId,
+    EmbeddingsProviderId,
     LLMProviderId,
     OperatorProviderId,
     ProviderCategory,
@@ -41,7 +42,10 @@ C, P = IntegrationCode, ProviderCategory
 # The code tree. Credential files may live inside it only under ``.local/`` (gitignored).
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_DIR = REPO_ROOT / ".local"
-PRODUCTION_REQUIRED = (P.EMAIL, P.LLM, P.OPERATOR_CHANNEL, P.KNOWLEDGE)
+# Stage 19: semantic retrieval (EMBEDDINGS) is required in production. Lexical retrieval stays the
+# local/offline/test path: it has a demonstrated false-positive sufficiency path (an unrelated chunk
+# sharing one word) that the claim check cannot always catch for qualitative capability claims.
+PRODUCTION_REQUIRED = (P.EMAIL, P.LLM, P.OPERATOR_CHANNEL, P.KNOWLEDGE, P.EMBEDDINGS)
 # A Telegram bot token's shape (<bot id>:<secret>); the value itself is never reported.
 TELEGRAM_TOKEN = re.compile(r"^\d{3,}:[A-Za-z0-9_-]{20,}$")
 
@@ -55,12 +59,14 @@ VARIABLES: dict[tuple[str, str], str] = {
     ("operator", "provider"): "OPERATOR_PROVIDER", ("operator", "operators"): "TELEGRAM_OPERATOR_CHAT_IDS",
     ("operator", "timeout_seconds"): "TELEGRAM_TIMEOUT_SECONDS",
     ("knowledge", "provider"): "KNOWLEDGE_PROVIDER", ("knowledge", "directory"): "KNOWLEDGE_DIR",
-    ("embeddings", "provider"): "EMBEDDINGS_PROVIDER",
+    ("embeddings", "provider"): "EMBEDDINGS_PROVIDER", ("embeddings", "model"): "EMBEDDINGS_MODEL",
+    ("embeddings", "dimensions"): "EMBEDDINGS_DIMENSIONS", ("embeddings", "timeout_seconds"): "EMBEDDINGS_TIMEOUT_SECONDS",
+    ("embeddings", "min_similarity"): "EMBEDDINGS_MIN_SIMILARITY",
 }
 SECRET_VARIABLES: dict[tuple[str, str], str] = {
     ("gmail", "client_id"): "GMAIL_CLIENT_ID", ("gmail", "client_secret"): "GMAIL_CLIENT_SECRET",
     ("gmail", "refresh_token"): "GMAIL_REFRESH_TOKEN", ("llm", "api_key"): "LLM_API_KEY",
-    ("telegram", "bot_token"): "TELEGRAM_BOT_TOKEN",
+    ("telegram", "bot_token"): "TELEGRAM_BOT_TOKEN", ("embeddings", "api_key"): "EMBEDDINGS_API_KEY",
 }
 CATEGORY_OF_SECTION = {"email": P.EMAIL, "llm": P.LLM, "operator": P.OPERATOR_CHANNEL, "knowledge": P.KNOWLEDGE,
                        "embeddings": P.EMBEDDINGS, "gmail": P.EMAIL, "telegram": P.OPERATOR_CHANNEL}
@@ -114,6 +120,7 @@ def evaluate(config: IntegrationConfig, secrets: ProviderSecrets, *, mailboxes: 
     _llm(config, secrets, problems)
     _operator(config, secrets, tuple(operator_ids), problems)
     _knowledge(config, problems)
+    _embeddings(config, secrets, problems)
     statuses = []
     for category, provider in selected(config):
         own = tuple(dict.fromkeys(p.render() for p in problems if p.category is category))
@@ -162,14 +169,16 @@ def _unselected(config: IntegrationConfig, secrets: ProviderSecrets) -> list[Int
     """Settings or secrets for a provider that is not selected are contradictory: rejected,
     never silently ignored."""
     found: list[IntegrationProblem] = []
-    for section, model in (("email", config.email), ("llm", config.llm), ("operator", config.operator)):
+    for section, model in (("email", config.email), ("llm", config.llm), ("operator", config.operator),
+                           ("embeddings", config.embeddings)):
         if model.provider.value != "NONE":
             continue
         for name in sorted(model.model_fields_set - {"provider"}):
             found.append(_problem(CATEGORY_OF_SECTION[section], C.PROVIDER_NOT_SELECTED, VARIABLES[(section, name)]))
     owners = {"gmail": config.email.provider is not EmailProviderId.GMAIL,
               "llm": config.llm.provider is LLMProviderId.NONE,
-              "telegram": config.operator.provider is not OperatorProviderId.TELEGRAM}
+              "telegram": config.operator.provider is not OperatorProviderId.TELEGRAM,
+              "embeddings": config.embeddings.provider is EmbeddingsProviderId.NONE}
     for (section, name), variable in SECRET_VARIABLES.items():
         if owners[section] and getattr(getattr(secrets, section), name) is not None:
             found.append(_problem(CATEGORY_OF_SECTION[section], C.PROVIDER_NOT_SELECTED, variable))
@@ -209,6 +218,16 @@ def _llm(config: IntegrationConfig, secrets: ProviderSecrets, problems: list[Int
         problems.append(_problem(P.LLM, C.MISSING_SETTING, "LLM_MODEL"))
     if secrets.llm.api_key is None:
         problems.append(_problem(P.LLM, C.MISSING_SECRET, "LLM_API_KEY"))
+
+
+def _embeddings(config: IntegrationConfig, secrets: ProviderSecrets, problems: list[IntegrationProblem]) -> None:
+    """NONE keeps lexical retrieval (local/test/offline); production requires a provider (PRODUCTION_REQUIRED)."""
+    if config.embeddings.provider is EmbeddingsProviderId.NONE:
+        return
+    if config.embeddings.model is None:
+        problems.append(_problem(P.EMBEDDINGS, C.MISSING_SETTING, "EMBEDDINGS_MODEL"))
+    if secrets.embeddings.api_key is None:
+        problems.append(_problem(P.EMBEDDINGS, C.MISSING_SECRET, "EMBEDDINGS_API_KEY"))
 
 
 def _operator(config: IntegrationConfig, secrets: ProviderSecrets, operator_ids: tuple[str, ...],

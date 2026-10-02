@@ -593,3 +593,41 @@ V12_AI_ENRICHMENT_JOBS_SCHEMA: tuple[str, ...] = (
     ) STRICT""",
     "CREATE INDEX ai_enrichment_jobs_due_idx ON ai_enrichment_jobs (status, due_at)",
 )
+
+
+# ---- v13: knowledge embeddings (Stage 19 semantic retrieval) -------------------------------
+# One stored vector per (chunk, embedding space, exact embedding input): the space is the
+# provider, the exact configured model and the requested dimensionality (0 = the model's
+# native size); ``input_hash`` is the SHA-256 of the exact text that was embedded. A changed
+# chunk text, model, provider or dimensionality therefore never reuses a vector. Rows are
+# derived and rebuildable: never updated in place, deleted when stale (source no longer
+# usable, other space, other input). ``vector`` is little-endian float32, L2-normalized.
+# Claims make concurrent indexers spend one provider call per chunk and space: a claim is
+# held (lease) only while its batch is being embedded. Ids, hashes, counts and vectors only:
+# never chunk text, an API key or provider output other than the validated vector.
+V13_KNOWLEDGE_EMBEDDINGS_SCHEMA: tuple[str, ...] = (
+    """CREATE TABLE knowledge_embeddings (
+        chunk_id TEXT NOT NULL REFERENCES knowledge_chunks (chunk_id),
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        requested_dimensions INTEGER NOT NULL CHECK (requested_dimensions >= 0),
+        input_hash TEXT NOT NULL CHECK (length(input_hash) = 64),
+        dimensions INTEGER NOT NULL CHECK (dimensions >= 1),
+        vector BLOB NOT NULL CHECK (length(vector) = 4 * dimensions),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (chunk_id, provider, model, requested_dimensions, input_hash),
+        CHECK (requested_dimensions = 0 OR requested_dimensions = dimensions)
+    ) STRICT""",
+    "CREATE INDEX knowledge_embeddings_space_idx ON knowledge_embeddings (provider, model, requested_dimensions)",
+    """CREATE TABLE knowledge_embedding_claims (
+        chunk_id TEXT NOT NULL REFERENCES knowledge_chunks (chunk_id),
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        requested_dimensions INTEGER NOT NULL CHECK (requested_dimensions >= 0),
+        input_hash TEXT NOT NULL CHECK (length(input_hash) = 64),
+        claim_token TEXT NOT NULL,
+        lease_until TEXT NOT NULL,
+        PRIMARY KEY (chunk_id, provider, model, requested_dimensions, input_hash)
+    ) STRICT""",
+    "CREATE INDEX knowledge_embedding_claims_token_idx ON knowledge_embedding_claims (claim_token)",
+)

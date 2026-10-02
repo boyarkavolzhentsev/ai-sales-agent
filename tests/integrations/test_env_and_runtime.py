@@ -12,7 +12,7 @@ from app.runtime import ConfigError, RuntimeMode, SalesAgentRuntime, StartupErro
 from app.runtime.cli import INVALID_CONFIG, OK, main
 from app.runtime.results import RuntimeState
 from tests.inbound.builders import NOW
-from tests.integrations.builders import API_KEY, BOT_TOKEN, CLIENT_ID, full_env, llm, telegram
+from tests.integrations.builders import API_KEY, BOT_TOKEN, CLIENT_ID, embeddings, full_env, llm, telegram
 from tests.runtime.builders import env
 
 P, S = ProviderCategory, ProviderState
@@ -57,7 +57,7 @@ def test_an_unknown_provider_reports_only_itself(tmp_path: Path) -> None:
 
 def test_production_is_a_mode_and_it_fails_closed(tmp_path: Path) -> None:
     from tests.integrations.builders import NO_LLM
-    config = load_config(full_env(tmp_path, MODE="production", **NO_LLM), now=NOW)
+    config = load_config(full_env(tmp_path, MODE="production", **(NO_LLM | embeddings())), now=NOW)
     assert config.mode is RuntimeMode.PRODUCTION
     app = SalesAgentRuntime(config)
     with pytest.raises(StartupError) as error:
@@ -69,10 +69,12 @@ def test_production_is_a_mode_and_it_fails_closed(tmp_path: Path) -> None:
 
 
 def test_production_starts_only_when_every_required_provider_is_configured(tmp_path: Path) -> None:
-    # Stage 18: Gmail, Telegram, an LLM and LOCAL knowledge are all implemented; with every
-    # one configured (and Gmail/Telegram verified at startup) production starts.
+    # Stage 18: Gmail, Telegram, an LLM and LOCAL knowledge are all implemented; Stage 19 adds
+    # embeddings (semantic retrieval). With every one configured (and Gmail/Telegram verified at
+    # startup) production starts.
     from tests.telegram.builders import fake_connectors
-    app = SalesAgentRuntime(load_config(full_env(tmp_path, MODE="production"), now=NOW), connectors=fake_connectors())
+    app = SalesAgentRuntime(load_config(full_env(tmp_path, MODE="production", **embeddings()), now=NOW),
+                            connectors=fake_connectors())
     report = app.start()
     assert report.integrations.production_ready and report.integrations.production_blockers == ()
     assert app.state is RuntimeState.READY
@@ -140,9 +142,9 @@ def run(*argv: str, environ: dict[str, str]) -> tuple[int, dict[str, object], st
 
 
 def test_provider_status_reports_without_a_database(tmp_path: Path) -> None:
-    code, report, _ = run("provider-status", environ=full_env(tmp_path))
+    code, report, _ = run("provider-status", environ=full_env(tmp_path, **embeddings()))
     assert code == OK and report["configuration_valid"] is True and report["mode"] == "LOCAL"
-    # Every required category is configured (Stage 18); provider-status itself contacts nothing.
+    # Every required category is configured (Stages 18/19); provider-status itself contacts nothing.
     assert report["production_ready"] is True and not (tmp_path / "agent.sqlite3").exists()
     integrations = report["integrations"]
     assert isinstance(integrations, dict)

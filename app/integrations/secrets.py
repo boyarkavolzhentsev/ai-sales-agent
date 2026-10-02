@@ -25,7 +25,14 @@ class TelegramSecrets(CoreModel):
     bot_token: SecretStr | None = None
 
 
+class EmbeddingsSecrets(CoreModel):
+    """Its own key: the LLM's key is never reused implicitly, even with the same vendor."""
+
+    api_key: SecretStr | None = None
+
+
 class ProviderSecrets(CoreModel):
     gmail: GmailSecrets = GmailSecrets()
     llm: LLMSecrets = LLMSecrets()
     telegram: TelegramSecrets = TelegramSecrets()
+    embeddings: EmbeddingsSecrets = EmbeddingsSecrets()

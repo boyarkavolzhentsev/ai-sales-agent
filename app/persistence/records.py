@@ -339,3 +339,40 @@ class AIEnrichmentJob(CoreModel):
         if final != (self.finished_at is not None):
             raise ValueError("finished_at is required for, and only allowed on, a final status")
         return self
+
+
+class EmbeddingKey(CoreModel):
+    """The identity of one stored knowledge embedding: the chunk, the embedding space
+    (provider, exact model, requested dimensionality; 0 = native) and the SHA-256 of the
+    exact embedded text."""
+
+    chunk_id: EntityId
+    provider: NonEmptyStr
+    model: NonEmptyStr
+    requested_dimensions: NonNegativeInt
+    input_hash: Sha256Hex
+
+    @property
+    def space(self) -> tuple[str, str, int]:
+        return (self.provider, self.model, self.requested_dimensions)
+
+
+class KnowledgeEmbeddingRecord(CoreModel):
+    """One validated, L2-normalized vector (little-endian float32 bytes). Derived from an
+    approved chunk and rebuildable; never carries the chunk text."""
+
+    key: EmbeddingKey
+    dimensions: PositiveInt
+    vector: bytes
+    created_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        if len(self.vector) != 4 * self.dimensions:
+            raise ValueError("vector must hold exactly 4 bytes per dimension")
+        if self.key.requested_dimensions not in (0, self.dimensions):
+            raise ValueError("a requested dimensionality must equal the stored one")
+        return self
+
+    def __repr__(self) -> str:  # never dump the vector
+        return f"KnowledgeEmbeddingRecord(key={self.key!r}, dimensions={self.dimensions})"

@@ -7,6 +7,7 @@ the variable and a code. Empty values count as unset. Only explicitly given fiel
 on the models, so a setting for an unselected provider is detected, not ignored.
 """
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -23,14 +24,17 @@ from app.integrations.config import (
 )
 from app.integrations.errors import IntegrationCode, IntegrationProblem
 from app.integrations.providers import ProviderCategory
-from app.integrations.secrets import GmailSecrets, LLMSecrets, ProviderSecrets, TelegramSecrets
+from app.integrations.secrets import EmbeddingsSecrets, GmailSecrets, LLMSecrets, ProviderSecrets, TelegramSecrets
 from app.integrations.status import CATEGORY_OF_SECTION, SECRET_VARIABLES, VARIABLES
 
 SETTING_VARIABLES = frozenset(VARIABLES.values())
 SECRET_NAMES = frozenset(SECRET_VARIABLES.values())
 INTEGRATION_VARIABLES = SETTING_VARIABLES | SECRET_NAMES
 _INTEGERS = frozenset({"GMAIL_POLL_INTERVAL_SECONDS", "GMAIL_TIMEOUT_SECONDS", "LLM_TIMEOUT_SECONDS", "LLM_MAX_OUTPUT_TOKENS",
-                       "TELEGRAM_TIMEOUT_SECONDS"})
+                       "TELEGRAM_TIMEOUT_SECONDS", "EMBEDDINGS_TIMEOUT_SECONDS", "EMBEDDINGS_DIMENSIONS"})
+# Plain decimal fractions only ("0.3", "0.35"): no exponent, sign, NaN or infinity.
+_FRACTIONS = frozenset({"EMBEDDINGS_MIN_SIMILARITY"})
+_FRACTION = re.compile(r"^(0|1)?\.\d{1,6}$|^[01]$")
 _SECTIONS: dict[str, type[CoreModel]] = {"email": EmailProviderConfig, "llm": LLMProviderConfig,
                                           "operator": OperatorChannelConfig, "knowledge": KnowledgeProviderConfig,
                                           "embeddings": EmbeddingsProviderConfig}
@@ -78,6 +82,7 @@ def parse_integrations(values: Mapping[str, str]) -> ParsedIntegrations:
                            refresh_token=secret.get("GMAIL_REFRESH_TOKEN")),
         llm=LLMSecrets(api_key=secret.get("LLM_API_KEY")),
         telegram=TelegramSecrets(bot_token=secret.get("TELEGRAM_BOT_TOKEN")),
+        embeddings=EmbeddingsSecrets(api_key=secret.get("EMBEDDINGS_API_KEY")),
     )
     return ParsedIntegrations(config=config, secrets=secrets, problems=tuple(problems))
 
@@ -88,6 +93,8 @@ def _value(variable: str, text: str) -> object | None:
         return text.upper()
     if variable in _INTEGERS:
         return int(text) if text.isdigit() else None
+    if variable in _FRACTIONS:
+        return float(text) if _FRACTION.fullmatch(text) else None
     if variable == "TELEGRAM_OPERATOR_CHAT_IDS":
         # "<telegram user id>=<operator id>,..." (private chats: the chat id is the user id)
         pairs = [item.strip().split("=", 1) for item in text.split(",") if item.strip()]

@@ -37,7 +37,7 @@ def test_no_provider_selected_is_valid_and_needs_nothing() -> None:
                                                                       S.DISABLED]
     assert status.of(P.KNOWLEDGE).capability_available  # the existing local index
     assert not status.production_ready and status.production_blockers == (
-        "EMAIL:DISABLED", "LLM:DISABLED", "OPERATOR_CHANNEL:DISABLED")
+        "EMAIL:DISABLED", "LLM:DISABLED", "OPERATOR_CHANNEL:DISABLED", "EMBEDDINGS:DISABLED")
 
 
 @pytest.mark.parametrize("with_file", [False, True])

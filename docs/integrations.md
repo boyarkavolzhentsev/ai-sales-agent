@@ -2,7 +2,8 @@
 
 Stage 15 added the configuration foundation real providers plug into; Stage 16 added the
 first real provider, **Gmail**; Stage 17 added **Telegram** as the operator channel; Stage 18
-added the live **LLM** providers (OpenAI, Anthropic, Gemini). Selecting a provider that is not implemented yet validates
+added the live **LLM** providers (OpenAI, Anthropic, Gemini); Stage 19 added **embeddings**
+(OpenAI, Gemini) for semantic retrieval over the approved local knowledge. Selecting a provider that is not implemented yet validates
 its configuration and reports `NOT_IMPLEMENTED`; its capability stays unavailable and
 nothing contacts it.
 
@@ -14,7 +15,7 @@ nothing contacts it.
 | LLM | `SALES_AGENT_LLM_PROVIDER` | `NONE`, `OPENAI`, `ANTHROPIC`, `GEMINI` | all three (Stage 18) |
 | Operator channel | `SALES_AGENT_OPERATOR_PROVIDER` | `NONE`, `TELEGRAM` | `TELEGRAM` (Stage 17) |
 | Knowledge | `SALES_AGENT_KNOWLEDGE_PROVIDER` | `LOCAL` | `LOCAL` (the local approved-knowledge index) |
-| Embeddings | `SALES_AGENT_EMBEDDINGS_PROVIDER` | `NONE` | not applicable |
+| Embeddings | `SALES_AGENT_EMBEDDINGS_PROVIDER` | `NONE`, `OPENAI`, `GEMINI` | both (Stage 19; required in production) |
 
 Provider-specific variables (`NONE` needs none; a setting or secret for a provider that
 is not selected is rejected with `PROVIDER_NOT_SELECTED`):
@@ -34,7 +35,14 @@ is not selected is rejected with `PROVIDER_NOT_SELECTED`):
   private chats only, where the chat id equals the user id; each operator id must be one
   of `SALES_AGENT_OPERATOR_IDS`; one chat per operator), optional
   `TELEGRAM_TIMEOUT_SECONDS` (bound of every Bot API call, 1-60, default 20).
-- **LOCAL** knowledge: optional `KNOWLEDGE_DIR` (must be a directory).
+- **LOCAL** knowledge: optional `KNOWLEDGE_DIR` (must be a directory; `knowledge-index`
+  ingests it).
+- **OPENAI / GEMINI** embeddings: `EMBEDDINGS_MODEL` (the provider's embedding model id, e.g.
+  `text-embedding-3-small`, `gemini-embedding-001`; same character rules as `LLM_MODEL`), the
+  secret `EMBEDDINGS_API_KEY` (its own key: the LLM key is never reused); optional
+  `EMBEDDINGS_DIMENSIONS` (1-8192; a reduced output size for models that support it; default:
+  the model's native size), `EMBEDDINGS_TIMEOUT_SECONDS` (1-120, default 30) and
+  `EMBEDDINGS_MIN_SIMILARITY` (a decimal between 0 and 1, default `0.30`).
 
 All names carry the `SALES_AGENT_` prefix. Unknown `SALES_AGENT_*` variables are rejected.
 
@@ -97,11 +105,12 @@ configuration; rotating a secret does not change it.
   touched); a Telegram token that `getMe` refuses stops startup with
   `OPERATOR_CHANNEL_PROVIDER_UNAVAILABLE`; `NOT_IMPLEMENTED` only leaves the capability
   unavailable.
-- `production`: startup is refused (`PRODUCTION_NOT_READY: <category>:<state>, ...`) unless
-  email, LLM, operator channel and knowledge are all `CONFIGURED`. Since Stage 18 every
-  required category has an implementation, so a deployment with Gmail, Telegram, an LLM and
-  LOCAL knowledge all configured starts in production (Gmail and Telegram are still verified
-  at startup and fail it if unusable). This removes no safety gate: every outbound message
+- `production`: startup is refused (`PRODUCTION_NOT_READY: <category>:<state>, ...`, before
+  the database is touched) unless email, LLM, operator channel, knowledge and (since Stage 19)
+  embeddings are all `CONFIGURED`. A deployment with Gmail, Telegram, an LLM, LOCAL knowledge
+  and an embeddings provider all configured starts in production (Gmail and Telegram are still
+  verified at startup and fail it if unusable); with `EMBEDDINGS_PROVIDER=NONE` it is refused
+  with `EMBEDDINGS:DISABLED`. This removes no safety gate: every outbound message
   still needs an operator's Stage 7 approval (auto-reply stays disabled), operators
   authenticate only through Telegram, and the kill switch, quotas and send window apply.
 
@@ -342,7 +351,7 @@ key. Nothing new is stored: prompts and raw responses are not persisted; the exi
 provenance records keep the prompt id/version, the model reported by the provider and
 input/output hashes.
 
-### Manual live smoke test
+### Manual live smoke test (LLM)
 
 Nothing below runs in the test suite. It makes billable requests; use a mailbox and a
 recipient you control, never a real prospect.
@@ -356,6 +365,114 @@ recipient you control, never a real prospect.
 5. `python -m app.runtime operator-sync`: the review card shows the drafted reply.
 6. Approve it in Telegram, run `operator-sync`, then `python -m app.runtime dispatch-tick`
    (or `execution-pass --dispatch-approved`): Gmail sends it.
+
+## Embeddings and semantic retrieval (Stage 19)
+
+**What it is.** A knowledge-*selection* mechanism over the approved LOCAL knowledge index:
+it decides which approved chunks are relevant to a customer's questions and in which order.
+It decides nothing else: not sufficiency on its own, not sending, approval, lead stage,
+WON/LOST, DNC, campaigns, commercial terms, dispatch, quota or policy. The knowledge
+provider stays `LOCAL` (the authority); the embeddings provider only ranks it. Embeddings and
+LLM providers are independent (e.g. `LLM_PROVIDER=ANTHROPIC` with `EMBEDDINGS_PROVIDER=OPENAI`).
+There is no fallback from one embeddings provider to another, and Anthropic is not offered
+(it has no first-party embeddings API).
+
+**What is embedded.** Only chunks of source versions that are usable now (approved,
+`EXTERNAL_OK`, effective and not past `review_by`, the newest usable version, not superseded
+or withdrawn; for any locale). Drafts, retired, internal-only, stale, not-yet-effective and
+superseded content is never indexed. The embedding input is exactly the stored chunk text (it
+begins with its heading path or document title); nothing else is appended, and a chunk over
+6000 characters is reported as failed, never truncated. The existing chunking is reused.
+
+**Storage (schema v13, `knowledge_embeddings`).** One row per chunk, embedding space and
+input: identity = chunk id + provider + exact model + requested dimensions + SHA-256 of the
+embedded text. A changed text, model, provider or dimensionality never reuses a vector.
+Vectors are validated (finite numbers, non-empty, the expected and one consistent
+dimensionality, the right count; never repaired) and stored L2-normalized as little-endian
+float32. No key, chunk text or provider response is stored. SQLite only: no external vector
+database; the search is a linear scan, fine for small/medium knowledge bases (an ANN index or
+vector database is a future scaling option behind the same retrieval contract).
+
+**Indexing.** `python -m app.runtime knowledge-index` runs once and exits: it ingests
+`KNOWLEDGE_DIR` if configured (validated as a whole, one transaction, identical versions are
+no-ops, nothing is approved), then deletes stale vectors (no longer usable sources, other
+spaces, other text) and embeds only chunks without a current vector, in batches of 32 (one
+request each). Unchanged chunks cost zero requests. Concurrent runs claim each batch first
+(a lease in `knowledge_embedding_claims`), so a chunk is embedded once; a provider failure
+stores nothing for that batch, releases its claims and stops the run (the next run retries);
+a crash between the provider's answer and the commit only re-embeds after the lease. Output
+is counts and codes only (`scanned`, `unchanged`, `embedded`, `removed`, `skipped`,
+`failed`, `requests`, `error_code`); exit code 4 when anything failed. Run it after every
+knowledge change and periodically (a scheduled source becomes indexable only once effective).
+Without an embeddings provider it only ingests.
+
+**Retrieval.** Stage 6 builds the query exactly as before (the classifier's extracted,
+normalized and bounded questions; no mailbox history). With an embeddings provider: if the
+configured space has no vectors at all, no query is embedded (no billable call); otherwise
+the questions are embedded in one request, outside any database transaction. Candidates are
+the current vectors of the usable sources (re-selected at query time, so a withdrawn source
+is never returned, even before re-indexing). Similarity is cosine (a dot product of unit
+vectors, rounded to 6 decimals); candidates below `EMBEDDINGS_MIN_SIMILARITY` are dropped;
+the best `top_k` (5) per question are kept, merged, ordered by (score desc, chunk id) and
+bounded to 24,000 characters of evidence. Evidence IDs are the same IDs the LLM contracts
+and the claim check accept. The deterministic knowledge gate (lexical coverage, required
+domains, diagnostics, fact conflicts) still decides sufficiency over that evidence: a high
+similarity never makes an answer sufficient by itself, and anything not SUFFICIENT is
+escalated to an operator without a draft. Usable chunks without a current vector add the flag
+`SEMANTIC_INDEX_INCOMPLETE`; until `knowledge-index` has run after selecting a provider (or
+changing its model), questions therefore escalate rather than silently using the lexical
+path. Approved knowledge reaches the model only as TRUSTED_EVIDENCE data
+in the user message, never as instructions. Retrieval is used only where a contract needs
+evidence (Stage 6 sufficiency and reply drafting); qualification/commercial extraction and the
+advisor receive no knowledge. Outbound campaign touches keep the lexical path.
+
+**Failures.** Codes: `AUTH_INVALID`, `RATE_LIMITED`, `QUOTA_EXCEEDED`, `MODEL_NOT_FOUND`,
+`BAD_REQUEST`, `INPUT_TOO_LARGE`, `TEMPORARY_PROVIDER_ERROR`, `TIMEOUT`, `NETWORK_ERROR`,
+`INVALID_RESPONSE`, `DIMENSION_MISMATCH`. Same retry rule as the LLM (one extra attempt only
+when nothing was processed: no connection, or 503). A failed query embedding (or an index of
+mixed dimensionality) fails closed: the inbound message stays stored and is escalated with
+`KNOWLEDGE_RETRIEVAL_FAILURE`; no draft is made and the lexical path is not silently used
+instead. Duplicate concurrent retrievals may embed the same question twice (a cost, never a
+state change).
+
+**Production.** Semantic retrieval is mandatory in production from Stage 19 onward (`EMBEDDINGS`
+is a production-required category; NONE blocks startup with `EMBEDDINGS:DISABLED`). Embeddings
+stay optional in `local` and `test` mode, where `EMBEDDINGS_PROVIDER=NONE` keeps the Stage 4
+lexical retrieval (no key, model, index or provider code needed). Why: lexical retrieval is a
+compatibility/local path and is not strong enough to be the sole grounding for capability
+questions. A single shared word can make an unrelated chunk "cover" a question (e.g. "Do you
+support SSO?" is covered by a "Support hours" FAQ chunk), and the claim check cannot always
+reject a qualitative claim such as "we support SSO"; semantic retrieval with its similarity
+threshold returns no evidence there, so the question escalates. After configuring an embeddings
+provider or changing its model, run `knowledge-index`: until vectors exist, retrieval fails closed
+(`SEMANTIC_INDEX_INCOMPLETE`, escalation, no lexical fallback). Startup still makes no
+embeddings request; a valid configuration is `CONFIGURED` in `provider-status` (no request either)
+and the capability report shows `semantic_retrieval`.
+
+**Limitations.** Local/test mode with `EMBEDDINGS_PROVIDER=NONE` keeps the lexical weakness
+above (production cannot run that path). No translation: queries and knowledge are embedded in their own language
+(cross-language matching depends on the model). The similarity threshold is model-dependent:
+tune it per deployment. Linear scan in SQLite.
+
+**Logging.** Provider, model, purpose, input count, outcome code, latency, attempt, request id,
+token count and dimensions; for retrieval the query id and hit count; for indexing the counts.
+Never knowledge text, customer text, vectors or the key.
+
+### Manual live smoke test (RAG)
+
+Billable; use a mailbox and a sender you control, never a real prospect.
+
+1. Set `SALES_AGENT_EMBEDDINGS_PROVIDER` (`OPENAI` or `GEMINI`), `SALES_AGENT_EMBEDDINGS_MODEL`
+   and `SALES_AGENT_EMBEDDINGS_API_KEY` (plus the LLM, Gmail and Telegram as above).
+2. `python -m app.runtime provider-status`: EMBEDDINGS `CONFIGURED` (no request is made).
+3. Put an approved test source in `SALES_AGENT_KNOWLEDGE_DIR` (e.g. a price list stating the
+   Basic plan price) and run `python -m app.runtime init`.
+4. `python -m app.runtime knowledge-index`: `sources_ingested` and `embeddings.embedded` are
+   above 0 and `failed` is 0. Run it again: `embedded` 0 and `requests` 0.
+5. From an address you control, ask the question the source answers; run `email-sync`.
+6. `operator-sync`: the review card shows a draft whose figures come from that source.
+7. Approve in Telegram, `operator-sync`, then `dispatch-tick`: Gmail sends it.
+8. Ask something the knowledge does not cover (e.g. SSO): the message is escalated, no draft.
 
 ## Deployments
 

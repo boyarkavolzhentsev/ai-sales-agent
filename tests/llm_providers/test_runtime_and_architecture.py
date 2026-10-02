@@ -54,7 +54,8 @@ def test_every_provider_yields_the_same_capabilities_without_any_request(tmp_pat
     report = app.start()
     assert report.capabilities.model_dump() == {
         "dispatch": True, "reconciliation": True, "inbound": True, "email_sync": True, "operator_channel": True,
-        "qualification_extraction": True, "commercial_extraction": True, "sales_advice": True}
+        "qualification_extraction": True, "commercial_extraction": True, "sales_advice": True,
+        "semantic_retrieval": False}  # no embeddings provider selected: lexical retrieval
     assert brain.session.posts == []  # no billable request at startup
     llm = next(p for p in report.integrations.providers if p.category.value == "LLM")
     assert (llm.provider, llm.state.value) == (provider.upper(), "CONFIGURED")

@@ -26,6 +26,9 @@
   email-sync        one bounded inbound mailbox pass (the first pass only sets the cursor)
                     [--recover: explicitly re-establish an expired cursor; mail in the gap
                     is not ingested]
+  knowledge-index   one incremental knowledge pass: ingest KNOWLEDGE_DIR (if configured),
+                    then embed approved chunks missing a current vector and delete stale
+                    vectors (if an embeddings provider is configured). Prints counts only
 
 Every command runs once and exits; there is no loop or daemon. Configuration comes from
 ``SALES_AGENT_*`` environment variables. Output is JSON with IDs, counts and codes only;
@@ -67,7 +70,7 @@ EXECUTION = ("execution-plan", "execution-queue", "execution-metrics", "executio
 def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.runtime", description="AI sales agent one-shot runtime commands")
     parser.add_argument("command", choices=("init", "health", "provider-status", "gmail-auth", "email-sync", "operator-sync", "ai-recovery-tick",
-                                            *TICKS, *EXECUTION))
+                                            "knowledge-index", *TICKS, *EXECUTION))
     parser.add_argument("--recover", action="store_true", help="email-sync only: re-establish an expired cursor")
     parser.add_argument("--dispatch-approved", action="store_true",
                         help="tick / execution-pass only: also dispatch approved messages")
@@ -114,6 +117,10 @@ def main(argv: Sequence[str], environ: Mapping[str, str], out: TextIO) -> int:
             recovered = runtime.ai_recovery_tick()
             _emit(out, recovered.model_dump(mode="json"))
             return OK
+        if args.command == "knowledge-index":
+            indexed = runtime.knowledge_index()
+            _emit(out, indexed.model_dump(mode="json"))
+            return PHASE_ERRORS if indexed.status.value == "ERROR" else OK
         if args.command == "operator-sync":
             result = runtime.operator_sync()
             _emit(out, result.model_dump(mode="json"))
